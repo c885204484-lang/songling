@@ -1,0 +1,12 @@
+# ROS 2 build artifacts
+/build/
+/install/
+/log/
+
+# Large local point-cloud data
+/src/songling_navigation/PCD/*.pcd
+/src/point_lio_ros2/PCD/scans.pcd
+
+# Large upstream archives already expanded under src/
+/src/archives/point_lio_ros2-main.zip
+/src/archives/ugv_sdk-main.zip

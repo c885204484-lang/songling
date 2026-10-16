@@ -1,0 +1,26 @@
+launch:
+  - arg: {name: 'start_rviz', default: 'true'}
+  - arg: {name: 'config_path', default: '$(find-pkg-share songling_navigation)/config/l2_slam.yaml'}
+
+  - node:
+      pkg: 'spark_fast_lio'
+      exec: 'spark_lio_mapping'
+      name: 'lio_mapping'
+      output: 'screen'
+      
+      # ROS2 YAML 语法必须用 param
+      param:
+        - from: '$(var config_path)'
+        
+      # ROS2 YAML 语法必须用 remap
+      remap:
+        - {from: 'lidar', to: '/unilidar/cloud'}
+        - {from: 'imu', to: '/unilidar/imu'}
+
+  - node:
+      if: '$(var start_rviz)'
+      pkg: 'rviz2'
+      exec: 'rviz2'
+      name: 'rviz'
+      # 注意这里的 RViz 配置文件还是借用 spark_fast_lio 里的默认布局
+      args: '-d $(find-pkg-share spark_fast_lio)/rviz/velodyne_mit.rviz'

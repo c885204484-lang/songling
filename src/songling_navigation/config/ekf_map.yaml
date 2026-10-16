@@ -1,0 +1,61 @@
+/**:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 5.0
+    two_d_mode: true
+    publish_tf: true
+    # 1. 补齐核心坐标系声明
+    map_frame: map              
+    odom_frame: odom            
+    base_link_frame: base_link  
+    world_frame: map
+    # 2. odom0: 本地里程计 (只取速度和航向角，坚决不取绝对位置！)
+    odom0: /odometry/local
+    # 顺序: [X, Y, Z, Roll, Pitch, Yaw, Vx, Vy, Vz, Vroll, Vpitch, Vyaw, Ax, Ay, Az]
+    odom0_config: [false, false, false,
+                   false, false, false,   # <--- 取绝对 Yaw (让EKF知道车头朝向)
+                   true,  true,  false,  # <--- 取 Vx, Vy (负责平滑短距离移动)
+                   false, false, true,   # <--- 取 Vyaw角速度
+                   false, false, false]
+    odom0_differential: false
+    odom0_queue_size: 10
+
+    # 👇👇👇 从这里开始，新增或覆盖 imu0 的配置 (注意缩进)
+    imu0: /unilidar/imu
+    imu0_config: [false, false, false,
+                  false, false, false,   # <--- 前面这 6 个必须是 false，躲避非法的全 0 朝向
+                  false, false, false,
+                  false, false, true,    # <--- 用角速度 Z (Vyaw)
+                  false, false,  false]   # <--- 用线加速度 X, Y (Ax, Ay)
+    imu0_differential: false
+    imu0_queue_size: 10
+
+
+
+    # 🌟 强行注入协方差，拯救崩溃的矩阵计算
+    imu0_orientation_covariance: [0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01]
+    imu0_angular_velocity_covariance: [0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01]
+    imu0_linear_acceleration_covariance: [0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1]
+
+    # 3. odom1: GPS里程计 (只取GPS的绝对位置)
+    odom1: /odometry/gps
+    odom1_config: [true,  true,  false,  # <--- 只信任 GPS 的 X, Y
+                   false, false, false,   # <--- 取绝对 Yaw (让EKF知道车头朝向)
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom1_differential: false
+    odom1_queue_size: 10
+    
+    # 4. imu1: 双天线 RTK 的绝对航向
+    imu1: /rtk/imu
+    imu1_config: [false, false, false,
+                  false, false, true,    # <--- 🌟 核心点：全局 EKF 只信任 RTK 提供的绝对 Yaw
+                  false, false, false,
+                  false, false, false,
+                  false, false, false]
+    imu1_differential: false
+    imu1_queue_size: 10
+    
+
+    # 注意：千万不要再加 odom1_pose_covariance 这行参数了

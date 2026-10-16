@@ -1,0 +1,25 @@
+~/songling_ws/
+├── src/                          # 所有 ROS2 功能包（必须保留在这里）
+│   ├── hunter_ros2/              # 底盘驱动
+│   ├── nmea_msgs/                # NMEA 消息定义
+│   ├── nmea_navsat_driver/       # NMEA 解析驱动
+│   ├── point_lio_ros2/           # 激光雷达里程计
+│   ├── ugv_sdk/                  # 底盘 SDK
+│   ├── unilidar_ros2/            # 雷达驱动
+│   ├── unitree_lidar_sdk/        # 雷达 SDK
+│   ├── wheeltec_dual_rtk_driver/ # G90 双天线驱动
+│   └── wheeltec_gps_driver/      # G90 GPS 驱动 
+│
+├── archives/                     # 压缩包存档（新建）
+│   ├── agx_sdk-master.zip
+│   ├── hunter_tutorials_rolling.zip
+│   ├── navigation2_tutorials_rolling.zip
+│   ├── point_lio_ros2-main.zip
+│   ├── ugv_sdk-main.zip
+│   └── unilidar_sdk2-2.0.4.zip
+│
+├── configs/                      # 配置文件（新建，可选）
+├── bags/                         # rosbag 数据（新建）
+├── build/
+├── install/
+└── log/

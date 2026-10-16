@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<robot name="hunter_robot">
+
+  <link name="base_link"/>
+
+  <link name="navsat_link"/>
+  <joint name="base_to_navsat" type="fixed">
+    <parent link="base_link"/>
+    <child link="navsat_link"/>
+    <origin xyz="0.0 0.0 0.2" rpy="0.0 0.0 0.0"/> 
+  </joint>
+
+  <link name="unilidar_lidar"/>
+  <joint name="base_to_unilidar" type="fixed">
+    <parent link="base_link"/>
+    <child link="unilidar_lidar"/>
+    <origin xyz="0.0 0.0 0.25" rpy="0.0 0.0 0.43"/>
+  </joint>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/> 
+    <origin xyz="0.3 0.0 0.5" rpy="0 0 0"/>
+</joint>
+
+<link name="camera_link">
+    <visual>
+        <geometry>
+            <box size="0.05 0.1 0.03"/>
+        </geometry>
+        <material name="blue">
+            <color rgba="0 0 1 1"/>
+        </material>
+    </visual>
+</link>
+</robot>

@@ -1,0 +1,42 @@
+/**:
+  ros__parameters:
+    frequency: 50.0
+    sensor_timeout: 0.1
+    two_d_mode: true
+    
+    # 🌟 核心修改 1：让 EKF 重新掌权！必须改成 true，否则 EKF 就算算得再准也发不出去。
+    publish_tf: true    
+    
+    map_frame: map              
+    odom_frame: odom            
+    base_link_frame: base_link
+    world_frame: odom
+    
+    # 1. 底盘里程计配置 (只信它的平移，不信它的旋转)
+    odom0: /odom
+    odom0_config: [false, false, false, 
+                   false, false, false, 
+                   true,  true,  false,  # <--- 保留 Vx, Vy 速度 (前行和侧移)
+                   false, false, false,  # 🌟 核心修改 2：把这里的 true 改成 false！(彻底拉黑底盘的偏航角速度)
+                   false, false, false]
+    odom0_differential: false
+    odom0_relative: true
+    odom0_queue_size: 10
+    
+    # 2. 雷达 IMU 配置 (全权负责旋转方向)
+    imu0: /unilidar/imu
+    # 顺序: [X, Y, Z, Roll, Pitch, Yaw, Vx, Vy, Vz, Vroll, Vpitch, Vyaw, Ax, Ay, Az]
+    imu0_config: [false, false, false, 
+                  false, false, false,   
+                  false, false, false, 
+                  false, false, true,    # <--- 保持 true，由高精度 IMU 全权接管 Vyaw
+                  false, false, false]   
+    imu0_differential: false
+    imu0_queue_size: 10
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: true
+    
+    # 3. 强制注入协方差 (覆盖雷达发出的全 0 错误)
+    imu0_orientation_covariance: [0.05, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0, 0.05]
+    imu0_angular_velocity_covariance: [0.05, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0, 0.05]
+    imu0_linear_acceleration_covariance: [0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1]

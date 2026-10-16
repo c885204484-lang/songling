@@ -1,0 +1,15 @@
+pointcloud_to_laserscan_node:
+  ros__parameters:
+    target_frame: unilidar_lidar  # 🌟 关键 1：将参考系指定为雷达自己的坐标系（请确保名字和 TF 树里一致）
+    transform_tolerance: 0.01
+    min_height: -0.25             # 🌟 关键 2：切掉雷达下方 25 厘米及以下的所有点（完美剔除地面）
+    # min_height: -0.15             # 🌟 关键 2：切掉雷达下方 15 厘米及以下的所有点（完美剔除地面）
+    max_height: 1.0               # 保留雷达上方 1 米以内的障碍物
+    angle_min: -3.14159      
+    angle_max: 3.14159
+    angle_increment: 0.025
+    scan_time: 0.1
+    range_min: 0.7
+    range_max: 15.0
+    use_inf: true
+    concurrency_level: 0

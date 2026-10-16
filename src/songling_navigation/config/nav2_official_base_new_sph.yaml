@@ -1,0 +1,375 @@
+bt_navigator:
+  ros__parameters:
+    use_sim_time: False
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odometry/local
+    transform_tolerance: 1.0
+    enable_groot_monitoring: False
+    error_code_names: ["compute_path_error", "follow_path_error"]
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    wait_for_service_timeout: 1000
+
+    # 👇 🌟 核心补救：强制指派带有“倒车等恢复行为”的行为树！
+    # ==========================================
+    default_nav_to_pose_bt_xml: "/opt/ros/humble/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml"
+    default_nav_through_poses_bt_xml: "/opt/ros/humble/share/nav2_bt_navigator/behavior_trees/navigate_through_poses_w_replanning_and_recovery.xml"
+
+    plugin_lib_names:
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
+      - nav2_smooth_path_action_bt_node
+      - nav2_follow_path_action_bt_node
+      - nav2_spin_action_bt_node
+      - nav2_wait_action_bt_node
+      - nav2_assisted_teleop_action_bt_node
+      - nav2_back_up_action_bt_node
+      - nav2_drive_on_heading_bt_node
+      - nav2_clear_costmap_service_bt_node
+      - nav2_is_stuck_condition_bt_node
+      - nav2_goal_reached_condition_bt_node
+      - nav2_goal_updated_condition_bt_node
+      - nav2_globally_updated_goal_condition_bt_node
+      - nav2_is_path_valid_condition_bt_node
+      - nav2_initial_pose_received_condition_bt_node
+      - nav2_reinitialize_global_localization_service_bt_node
+      - nav2_rate_controller_bt_node
+      - nav2_distance_controller_bt_node
+      - nav2_speed_controller_bt_node
+      - nav2_truncate_path_action_bt_node
+      - nav2_truncate_path_local_action_bt_node
+      - nav2_goal_updater_node_bt_node
+      - nav2_recovery_node_bt_node
+      - nav2_pipeline_sequence_bt_node
+      - nav2_round_robin_node_bt_node
+      - nav2_transform_available_condition_bt_node
+      - nav2_time_expired_condition_bt_node
+      - nav2_path_expiring_timer_condition
+      - nav2_distance_traveled_condition_bt_node
+      - nav2_single_trigger_bt_node
+      - nav2_goal_updated_controller_bt_node
+      - nav2_is_battery_low_condition_bt_node
+      - nav2_navigate_through_poses_action_bt_node
+      - nav2_navigate_to_pose_action_bt_node
+      - nav2_remove_passed_goals_action_bt_node
+      - nav2_planner_selector_bt_node
+      - nav2_controller_selector_bt_node
+      - nav2_goal_checker_selector_bt_node
+      - nav2_controller_cancel_bt_node
+      - nav2_path_longer_on_approach_bt_node
+      - nav2_wait_cancel_bt_node
+      - nav2_spin_cancel_bt_node
+      - nav2_back_up_cancel_bt_node
+      - nav2_assisted_teleop_cancel_bt_node
+      - nav2_drive_on_heading_cancel_bt_node
+      - nav2_is_battery_charging_condition_bt_node
+
+bt_navigator_navigate_through_poses_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+bt_navigator_navigate_to_pose_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+controller_server:
+  ros__parameters:
+    use_sim_time: False
+    controller_frequency: 20.0 # 🌟 建议提高到 20Hz，真车控制更灵敏，减少 TF 延迟报错
+    transform_tolerance: 0.1  # 🌟 容忍度放宽：10秒移动 10 厘米即可，防止误判卡死
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"] 
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.1 # 降到 0.1
+      movement_time_allowance: 10.0 # 放宽到 10.0
+      
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 1.5        # 从 0.3 改为 1.0 或 1.5 米。小车只要进入目标周边 1.5 米的圆圈内，就判定任务成功。
+      yaw_goal_tolerance: 3.14
+
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.6
+      
+# # 🌟 关键修改：大幅增加前瞻距离的下限和上限
+#       lookahead_dist: 1.5           # 默认前瞻距离，改为 1.5
+#       min_lookahead_dist: 1.0       # 🌟 关键！最小前瞻距离改为 1.0，禁止小车看脚下！
+#       max_lookahead_dist: 3.0       # 最大前瞻距离改为 3.0
+#       lookahead_time: 1.5    
+# 🌟 优化后的合理前瞻距离，兼顾远方和脚下
+      lookahead_dist: 2.0            # 基础值提高
+      min_lookahead_dist: 1.5        # 最小不低于 1.5
+      max_lookahead_dist: 3.5        # 最大放宽，让车在直线上看远一点
+      lookahead_time: 1.5             
+      
+      use_rotate_to_heading: false
+      allow_reversing: false  # 一般不建议自动倒车，先设为 false
+      
+      use_velocity_scaled_lookahead_dist: true
+      use_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 2.0 #最小转弯半径（m）
+      regulated_linear_scaling_min_speed: 0.25
+      # use_collision_detection: true
+      # max_allowed_time_to_collision_up_to_carrot: 1.0
+      inflation_cost_scaling_factor: 5.0
+# 🌟 关键修改 2：开启并调大碰撞检测时间
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 2.0  # 从 1.0秒 改为 2.5秒。
+      # 解释：意思是如果控制器预测小车沿当前速度开过去，在 2.5 秒内会撞上障碍物，它就会立刻减速或触发避障动作！
+      
+      # 👇 强制添加这三行
+      use_cost_regulated_linear_velocity_scaling: true 
+      cost_scaling_dist: 0.6  # 距离障碍物多远开始减速（米）
+      cost_scaling_gain: 1.0  # 减速的倍率，越大减速越猛
+
+
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0 # 重绘频率
+      publish_frequency: 5.0
+      global_frame: odom
+      robot_base_frame: base_link
+      use_sim_time: False
+      transform_tolerance: 0.5 # 局部代价地图的容忍度
+      rolling_window: true
+      width: 20
+      height: 20
+      resolution: 0.05
+      footprint: "[[-0.41, -0.32], [-0.41, 0.32], [0.41, 0.32], [0.41, -0.32]]"
+      plugins: ["obstacle_layer", "inflation_layer"]
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 5.0    # 这个值越小，障碍物周围的“高代价危险区”范围就越大，小车会离得更远
+        inflation_radius: 0.6       # 🌟 关键修改：将膨胀半径加大（例如从 0.45 加大到 0.8 米或 1.0 米）
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        # 告诉 Nav2 我们现在有两个“眼睛”：雷达(scan) 和 相机(camera)
+        observation_sources: scan # camera
+        scan:
+          topic: /scan
+          min_obstacle_height: 0.15 # 🌟 稍微调高一点点，避开真车行驶时由于颠簸导致的地面误识别
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          inf_is_valid: True # 如果雷达射线射向天空或没返回数据（inf），不将其作为清除地图的依据。
+          data_type: "LaserScan"
+          raytrace_max_range: 16.0
+          obstacle_max_range: 14.5
+          raytrace_min_range: 0.2
+          obstacle_min_range: 0.2 # 忽略极近距离噪点和反射
+        # ==========================================
+        # 🌟 新增：深度相机避障源
+        # ==========================================
+      #   camera:
+      #     # 这里填入你 Astra Pro 输出的深度点云话题，或者是你 YOLO 3D 转换后的障碍物点云话题
+      #     topic: /camera/depth/points_raw
+      #     data_type: "PointCloud2"
+      #     qos_reliability: "best_effort"
+      #     qos_durability: "volatile"
+      #     qos_history: "keep_last"
+      #     qos_depth: 1
+      #     marking: True       # 发现障碍物时，标记在地图上
+      #     clearing: True      # 障碍物移走时，从地图上清除
+      #     max_obstacle_height: 1.5  # 高于 1.5 米的物体忽略（比如天花板、树枝）
+      #     min_obstacle_height: 0.05 # 低于 5 厘米的物体忽略（防止把地面噪点当成障碍物）
+      #     obstacle_range: 2.5       # 只处理 2.5 米内的视觉障碍物（深度相机远距离误差大）
+      #     raytrace_range: 3.0       # 清除 3.0 米内的视觉历史障碍物
+      # always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 3.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      use_sim_time: False
+      transform_tolerance: 5.0
+      footprint: "[[-0.41, -0.32], [-0.41, 0.32], [0.41, 0.32], [0.41, -0.32]]"
+      resolution: 0.25 # 分辨率
+      width: 1000
+      height: 1000
+      track_unknown_space: true
+      plugins: ["obstacle_layer", "inflation_layer"]
+      rolling_window: true
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          inf_is_valid: True
+          data_type: "LaserScan"
+          raytrace_max_range: 16.0
+          obstacle_max_range: 14.5
+          raytrace_min_range: 0.2
+          obstacle_min_range: 0.2
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 5.0    # 这个值越小，障碍物周围的“高代价危险区”范围就越大，小车会离得更远
+        inflation_radius: 0.8       # 🌟 关键修改：将膨胀半径加大（例如从 0.45 加大到 0.8 米或 1.0 米）
+      always_send_full_costmap: True
+
+map_saver:
+  ros__parameters:
+    use_sim_time: False
+    save_map_timeout: 5.0
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+    map_subscribe_transient_local: True
+
+# planner_server:
+#   ros__parameters:
+#     expected_planner_frequency: 2.0
+#     use_sim_time: False
+#     planner_plugins: ["GridBased"]
+    
+#     GridBased:
+#       # 👇 🌟 核心：把 Navfn 换成 SmacHybrid
+#       plugin: "nav2_smac_planner/SmacPlannerHybrid"
+      
+#       downsample_costmap: false
+#       allow_unknown: true
+#       max_iterations: 1000000
+#       max_on_approach_iterations: 1000
+      
+#       # 🌟 以下是专为阿克曼底盘设置的运动学约束
+#       minimum_turning_radius: 2.0   # 你的小车最小转弯半径（米）
+#       reverse_penalty: 2.1          # 惩罚倒车（尽量往前开）
+#       change_penalty: 0.1           # 惩罚猛打方向盘
+#       non_straight_penalty: 1.2     # 惩罚非直线行驶
+#       cost_penalty: 2.0
+#       retrospective_penalty: 0.015
+      
+#       # 如果你的底盘不允许倒车，设为 false；如果允许自动倒车调头，设为 true
+#       allow_reverse_expansion: true
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 1.0
+    use_sim_time: False
+    transform_tolerance: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_smac_planner/SmacPlannerHybrid"
+      tolerance: 0.5 # 无法到达精确位姿时的规划容差（米）
+      downsample_costmap: false # 🌟 核心修改：改为 false！强制在原始分辨率上进行高精度规划，生成丝滑的阿克曼曲线。
+      downsampling_factor: 2 # 代价地图层的分辨率乘数（例如，在 5cm 分辨率的代价地图上，乘数为 2 时，实际分辨率为 10cm）
+      allow_unknown: true # 允许在未知空间中通行
+      max_iterations: 400000 # 在判定失败之前，允许搜索的最大总迭代次数（针对目标不可达的情形），设置为 -1 可禁用该限制
+      max_on_approach_iterations: 1000 # 一旦进入目标容忍区间，允许的最大迭代次数（用于最终到达目标）
+      terminal_checking_interval: 5000 # 每隔多少次迭代检查一次目标是否被取消或规划器是否超时
+      max_planning_time: 3.5 # 规划、平滑和上采样总时长上限（单位：秒）。平滑和上采样的最大耗时将根据规划完成后剩余的时间按比例调整。
+      motion_model_for_search: "REEDS_SHEPP" # 适用于 Hybrid Dubin 和 Reeds-Shepp 运动模型
+      cost_travel_multiplier: 2.0 # 2D 代价乘数（避障偏置）。值越大越居中（需非 FREE 势场），但计算更慢。推荐：1.0（速度优先），2.0（折中），0.0（禁用偏置，退化为二值 A*）。
+      angle_quantization_bins: 32 # 混合节点角度离散数。二维节点固定为 1（不进行角度搜索）
+      analytic_expansion_ratio: 3.5 # 混合/晶格节点：搜索中尝试解析扩展接近目标的比例（频率）。
+      analytic_expansion_max_length: 8.0 # 混合/晶格节点中，解析扩展有效长度的上限（米），超过此长度则视为不安全捷径而不采用。该值应与最小转弯半径成比例，且至少为最小转弯半径的 4～5 倍。
+      analytic_expansion_max_cost: 200 # 混合/晶格节点中，解析扩展路径的任意一段所允许的最大单项代价，超过此值的扩展将被视为无效（但在最终逼近目标时，如有必要可以放宽此限制）。
+      analytic_expansion_max_cost_override: false # 混合/晶格节点：是否在距目标临界距离内覆盖最大代价限制。若扩展到达目标周围 2π·min_r 内，且此参数为 false，则覆盖生效。
+      minimum_turning_radius: 2.1 #物理适配：底盘极限半径为 1.9m，设置为 2.0m 给全局规划器留出安全余量，避免“路径不可行”的报错 。
+      reverse_penalty: 2.5 # 原来是 1.3。改成 2.5 后，它绝不会规划出超过 5 米的倒车路线
+      change_penalty: 0.1 # 🌟 核心修改 2：稍微加一点点换挡惩罚，防止原地反复横跳
+      non_straight_penalty: 1.50  #这会促使规划器在生成路径时更倾向于长距离的平滑转弯，而非频繁的小角度修正。
+      cost_penalty: 5.0 # 🌟 从 2.0 提升到 5.0。极大增强“远离障碍物、走正中间”的意愿
+      retrospective_penalty: 0.025 # 混合/晶格节点：沿路径更倾向于后续机动而非较早机动的惩罚值。可节省搜索时间，因为早期节点不会在必要时才扩展。取值必须 >= 0.0 且 <= 1.0
+      rotation_penalty: 5.0 # 晶格节点：当使用包含原地旋转原语的最小控制集时，仅对原地纯旋转命令施加的惩罚。该值应设置得足够高以抑制此动作，除非在避障时严格必需，否则可能导致规划中频繁出现不连续，要求机器人原地旋转以节省微小的路径距离，从而破坏原本平滑的路径。
+      lookup_table_size: 20.0 # 混合节点：Dubin/Reeds-Shepp距离窗口的缓存大小，单位米。
+      cache_obstacle_heuristic: True # 混合节点：在同一目标位置的后续重新规划之间，缓存障碍物地图的动态规划距离扩展启发式。如果代价地图基本静态，可大幅提升重新规划性能（40倍）。
+      allow_reverse_expansion: False # 晶格节点：是否以正向原语扩展状态晶格图，还是同时允许反向扩展，这会使每一步的分支因子加倍。
+      smooth_path: True # 晶格/混合节点：是否平滑路径，对于二维节点始终为真。
+      debug_visualizations: False # 混合/晶格节点：是否将扩展发布到 /expansions 话题（作为姿态数组，其方向无意义），并将路径的足迹发布到 /planned_footprints 话题。警告：计算和显示开销很大，仅用于调试，会降低性能。
+  
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true # Whether to recursively run the smoother 3 times on the results from prior runs to refine the results further
+
+
+
+smoother_server:
+  ros__parameters:
+    use_sim_time: False
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: True
+
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+      # 配置倒车的具体参数
+      simulate_ahead_time: 0.1
+      backup_x: -2.0     # 每次脱困尝试往后倒 1.0 米
+      backup_speed: -0.5 # 倒车速度 0.3 m/s
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors/AssistedTeleop"
+    global_frame: odom
+    robot_base_frame: base_link
+    transform_tolerance: 1.0
+    use_sim_time: False
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.3
+    min_rotational_vel: 0.1
+    rotational_acc_lim: 1.0
+
+robot_state_publisher:
+  ros__parameters:
+    use_sim_time: False
+
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: False
+    loop_rate: 20
+    stop_on_failure: false
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 200
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: False
+    smoothing_frequency: 20.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.8, 0.0, 0.4]
+    min_velocity: [-0.6, 0.0, -0.4]
+    max_accel: [1.5, 0.0, 1.0]
+    max_decel: [-2.5, 0.0, -1.0]
+    odom_topic: "/odometry/local"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0

@@ -1,0 +1,1 @@
+/usr/bin/c++ -std=c++17  -O3 -Wall -DNDEBUG -rdynamic CMakeFiles/example_lidar_serial.dir/examples/example_lidar_serial.cpp.o -o ../bin/example_lidar_serial   -L/home/nvidia/songling_ws/src/unitree_lidar_sdk/lib/aarch64  -Wl,-rpath,/home/nvidia/songling_ws/src/unitree_lidar_sdk/lib/aarch64 -Wl,-Bstatic -lunitree_lidar_sdk -Wl,-Bdynamic 

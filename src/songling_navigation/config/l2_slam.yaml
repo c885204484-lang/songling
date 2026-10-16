@@ -1,0 +1,43 @@
+/**:
+  ros__parameters:
+    preprocess:
+      lidar_type: 2           # 使用 Velodyne 兼容协议
+      scan_line: 1            # 4D雷达通常作为单线或虚拟线处理
+      scan_rate: 12         # Unitree L2 周向扫描频率
+      timestamp_unit: 0       # 建议设为 3 (nanosecond)
+      blind: 0.05             
+      blind_for_human_pilot: 0.1
+
+    mapping:
+      acc_cov: 0.1
+      gyr_cov: 0.1
+      b_acc_cov: 0.0001
+      b_gyr_cov: 0.0001
+      fov_degree: 360.0
+      det_range: 30.0         
+      extrinsic_est_en: false 
+
+      # 雷达相对于 IMU 的外参 (此处为无偏移的初始值)
+      extrinsic_T: [0.0, 0.0, 0.5]
+      extrinsic_R: [1.0, 0.0, 0.0, 
+                    0.0, 1.0, 0.0, 
+                    0.0, 0.0, 1.0]
+
+    filter_size_map: 0.3
+    
+    publish:
+      path_en: true
+      scan_publish_en: true
+      dense_publish_en: true
+      scan_lidarframe_pub_en: true
+      scan_bodyframe_pub_en: true
+      scan_baseframe_pub_en: false
+
+    # 👇 在这里加上保存地图的配置 👇
+    pcd_save:
+      pcd_save_en: true    # 设置为 true 开启保存
+      interval: -1        # -1 表示在程序结束时一次性保存所有点云  
+      pcd_save_dir: "/home/nvidia/songling_ws/src/songling_navigation/PCD/"
+
+    max_iteration: 4
+    cube_side_length: 1000.0
