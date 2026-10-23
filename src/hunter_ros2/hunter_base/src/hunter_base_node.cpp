@@ -36,5 +36,9 @@ int main(int argc, char **argv) {
     robot->Run();
   }
 
+  // Destroy node handles while the ROS context is still alive. Leaving the
+  // global shared_ptr until static teardown can outlive middleware globals.
+  robot.reset();
+  rclcpp::shutdown();
   return 0;
 }

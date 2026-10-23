@@ -3,6 +3,11 @@
 /install/
 /log/
 
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Large local point-cloud data
 /src/songling_navigation/PCD/*.pcd
 /src/point_lio_ros2/PCD/scans.pcd

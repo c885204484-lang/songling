@@ -23,3 +23,8 @@ target_include_directories(utests PRIVATE ${PRIVATE_HEADERS})
 # add_subdirectory(devel)
 add_executable(scout_memory_check scout_memory_check.cpp)
 target_link_libraries(scout_memory_check ugv_sdk)
+
+# Opt-in SocketCAN regression; see SOCKETCAN_TEST.md for virtual interface setup.
+# Not registered with ctest because it lowers/raises only the sltestcan interface.
+add_executable(async_can_reconnect async_can_reconnect.cpp)
+target_link_libraries(async_can_reconnect ugv_sdk)

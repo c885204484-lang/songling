@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Songling · 离线地图工作台</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <b class="logo">S</b>
+        <div>
+          <strong>SONGLING <span>地图工作台</span></strong
+          ><small>离线标注 / 区域约束 / 自主导航</small>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="connection" class="badge">连接中</span
+        ><button id="ros-open">连接 ROS</button
+        ><button id="registration-open">地图配准</button
+        ><button id="import-open">导入地图</button
+        ><button id="export">导出地图包 ↓</button
+        ><button id="save" class="primary">保存当前地图</button>
+      </div>
+    </header>
+    <main>
+      <aside class="left">
+        <div class="section-title">
+          <span>01 / 地图标注</span><span id="dirty" class="muted">已保存</span>
+        </div>
+        <p class="hint" id="annotation-hint">
+          绘制可行驶范围，再添加禁行区域。区域坐标以 map 米制坐标保存。
+        </p>
+        <div class="tools" role="group" aria-label="标注工具">
+          <button data-tool="pan" class="selected">
+            <i>↔</i><span>浏览地图<small>拖动平移 · 滚轮缩放</small></span>
+          </button>
+          <button data-tool="drivable">
+            <i class="green">▱</i
+            ><span>可行驶区域<small>多边形范围内允许通行</small></span>
+          </button>
+          <button data-tool="forbidden">
+            <i class="red">▱</i
+            ><span>禁行区域<small>优先覆盖可行驶区域</small></span>
+          </button>
+          <button data-tool="waypoint">
+            <i class="blue">⚑</i
+            ><span>添加航点<small>点击地图设置位置</small></span>
+          </button>
+          <button data-tool="goal">
+            <i class="amber">◎</i
+            ><span>设置导航终点<small>交给 Nav2 规划路径</small></span>
+          </button>
+          <button data-tool="obstacle">
+            <i class="red">⊕</i
+            ><span>仿真障碍<small>点击添加激光障碍</small></span>
+          </button>
+        </div>
+        <div class="row">
+          <button id="finish">完成多边形 ↵</button
+          ><button id="undo">撤销</button>
+        </div>
+        <p class="hint">
+          多边形：逐点点击，按 Enter 完成、Esc 放弃。鼠标中键可随时平移。
+        </p>
+        <label class="field"
+          >边界安全距离
+          <div>
+            <input
+              id="clearance"
+              type="number"
+              min="0"
+              max="5"
+              step="0.05"
+              value="0.65"
+            /><span>米</span>
+          </div></label
+        >
+        <p class="hint">
+          导航至少 0.65 米，包含车身半径。原地图的障碍物和未知区域始终禁行。
+        </p>
+        <button id="mask" class="full">保存并预览导航掩码</button>
+        <label class="check"
+          ><input id="show-mask" type="checkbox" />显示栅格禁行掩码</label
+        >
+        <div class="section-title">
+          <span>标注图层</span><span id="count">0</span>
+        </div>
+        <div id="layers" class="list"></div>
+        <div class="map-info" id="map-info"></div>
+        <details class="storage-info">
+          <summary>地图保存位置</summary>
+          <p class="hint">
+            保存在运行服务的小车 / Jetson 上；导出地图包则下载到浏览器所在电脑。
+          </p>
+          <code id="storage-path">尚未保存</code>
+          <p class="hint">
+            project.json：标注；basemap.png：卫星底图；navigation.yaml +
+            navigation.pgm：导航地图。重启自动恢复最近快照。
+          </p>
+        </details>
+      </aside>
+      <section class="map-panel" aria-label="地图编辑区域">
+        <div id="site-banner" class="site-banner" hidden></div>
+        <div class="map-toolbar">
+          <div>
+            <b id="tool-title">浏览地图</b
+            ><span id="map-label">MAP / 米制坐标</span>
+          </div>
+          <div class="row">
+            <button id="zoom-out" aria-label="缩小">−</button
+            ><span id="zoom">100%</span
+            ><button id="zoom-in" aria-label="放大">＋</button
+            ><button id="fit">适应窗口</button>
+          </div>
+        </div>
+        <canvas
+          id="map"
+          tabindex="0"
+          aria-label="地图，选择左侧工具后点击标注"
+        ></canvas>
+        <div class="legend">
+          <span><i class="dot green-bg"></i>可行驶区</span
+          ><span><i class="dot red-bg"></i>禁行区</span
+          ><span><i class="dot blue-bg"></i>Nav2 路径</span
+          ><span><i class="dot amber-bg"></i>激光障碍</span>
+        </div>
+        <div class="coordinates">
+          <span id="coords">x — / y —</span><span id="scale-label"></span>
+        </div>
+      </section>
+      <aside class="right">
+        <section id="registration-panel" hidden aria-label="地图配准">
+          <div class="section-title">
+            <b>地图配准</b
+            ><button id="registration-close" class="text-button">
+              返回导航
+            </button>
+          </div>
+          <fieldset id="registration-fields">
+            <button id="registration-geodetic" class="primary full">
+              经纬度自动对齐（无需采点）
+            </button>
+            <p class="hint">
+              高德底图自动转换至当前 GPS 导航坐标。保留标注及原快照，保存后重新应用地图。
+              卫星影像和 GPS 仍有实测误差，不能用投影误差代替定位精度。
+            </p>
+            <div id="registration-gps" class="pose-readout"></div>
+            <p class="hint">
+              沿现场地面标记采集至少 3 个分散且不共线的配准点，再另采至少 1
+              个检查点。每个点统一以车体 base_link
+              对应的地面位置为准，停稳后采集。
+            </p>
+            <button id="registration-pick" class="full">
+              ① 在地图选择对应位置
+            </button>
+            <div id="registration-selected" class="pose-readout">
+              尚未选择地图位置
+            </div>
+            <button id="registration-capture" class="full">
+              ② 读取当前小车位置并添加点
+            </button>
+            <details>
+              <summary>手工输入已记录的 ROS map 坐标</summary>
+              <div class="target-grid">
+                <label
+                  >X / m<input id="registration-x" type="number" step="any"
+                /></label>
+                <label
+                  >Y / m<input id="registration-y" type="number" step="any"
+                /></label>
+              </div>
+              <button id="registration-manual" class="full">
+                使用输入坐标添加点
+              </button>
+            </details>
+            <p class="hint">
+              新点默认参与配准；列表中可改为独立检查点。检查点只验证误差，不参与拟合。
+            </p>
+            <div id="registration-points" class="list"></div>
+            <label class="check"
+              ><input
+                id="registration-scale"
+                type="checkbox"
+              />同时校正比例尺</label
+            >
+            <label class="field"
+              >各点允许误差 / 米<input
+                id="registration-tolerance"
+                type="number"
+                min="0.05"
+                max="5"
+                step="0.05"
+                value="0.75"
+            /></label>
+            <button id="registration-preview" class="full">
+              ③ 计算配准与检查误差
+            </button>
+            <div
+              id="registration-report"
+              class="registration-report"
+              role="status"
+            >
+              尚未计算；不会改变当前地图。
+            </div>
+            <label class="check"
+              ><input id="registration-fixed" type="checkbox" />已固定定位 map
+              的原点及朝向，重启后保持一致</label
+            >
+            <p class="hint">
+              GPS 定位需先设置固定
+              datum；此页面只配准地图，不修改定位配置。允许误差需小于现场道路预留余量。仿真采集的结果仅供仿真使用。
+            </p>
+            <button id="registration-save" class="primary full" disabled>
+              ④ 另存配准地图
+            </button>
+            <button id="registration-clear" class="full">清空本次对应点</button>
+            <p class="hint">
+              保存会同步转换可行驶区、禁行区和航点；原快照保留。保存后需重新应用地图到
+              Nav2。采点草稿仅保存在当前浏览器。
+            </p>
+          </fieldset>
+        </section>
+        <div id="navigation-panel">
+          <div class="section-title">
+            <span>02 / 导航任务</span><span class="live-dot"></span>
+          </div>
+          <div class="runtime-card">
+            <span class="muted">当前状态</span>
+            <h2 id="nav-status">离线编辑</h2>
+            <p id="nav-message">加载中…</p>
+            <div id="sensor-status"></div>
+          </div>
+          <button id="apply" class="full">应用已保存地图到 Nav2</button>
+          <div class="section-title"><span>起点 · 小车当前位置</span></div>
+          <div id="start-pose" class="pose-readout">等待 ROS 定位</div>
+          <p class="hint">
+            规划和导航自动使用 map → base_link
+            的实时位置与朝向作为起点，随小车位置更新。
+          </p>
+          <button id="locate-start" class="full" disabled>
+            定位到当前起点
+          </button>
+          <div class="section-title">
+            <span>导航终点</span
+            ><button data-tool="goal" class="text-button">地图选点</button>
+          </div>
+          <div class="target-grid">
+            <label
+              >X / m<input
+                id="goal-x"
+                type="number"
+                step="0.1"
+                placeholder="地图选点" /></label
+            ><label
+              >Y / m<input
+                id="goal-y"
+                type="number"
+                step="0.1"
+                placeholder="地图选点" /></label
+            ><label class="wide"
+              >到达航向 / °<input id="goal-yaw" type="number" step="5" value="0"
+            /></label>
+          </div>
+          <div class="row">
+            <button id="plan">仅规划</button
+            ><button id="navigate" class="primary">开始导航 →</button>
+          </div>
+          <button id="cancel" class="danger full">取消导航 / 停止</button>
+          <div class="section-title">
+            <span>航点任务</span><span id="waypoint-count">0 个</span>
+          </div>
+          <div id="waypoints" class="list"></div>
+          <button id="route" class="full">按顺序导航所有航点</button>
+          <button id="clear-obstacles" class="full">清除仿真障碍</button>
+          <p class="hint">
+            区域编辑保存后，需重新应用才会更新导航地图。任务执行期间禁止切换地图。
+          </p>
+        </div>
+      </aside>
+    </main>
+    <footer>
+      <span id="notice" role="status" aria-live="polite">正在载入地图…</span
+      ><span>LOCAL WORKSPACE · 无外部地图请求</span>
+    </footer>
+    <dialog id="ros-dialog">
+      <div class="section-title">
+        <b>连接 ROS 2</b><button id="ros-close">关闭</button>
+      </div>
+      <p class="hint">
+        浏览器连接本机网页服务，由服务接入 ROS 2。以 ROS
+        模式启动后，下方显示接口状态。
+      </p>
+      <pre id="ros-status">当前为离线编辑模式</pre>
+      <h3>接实车：现有底盘、激光雷达、GPS 定位</h3>
+      <p class="hint">
+        在小车 / Jetson 终端执行，先停止原网页服务和原导航
+        launch，以免端口或节点重复。
+      </p>
+      <pre>
+cd ~/songling/songling_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch songling_navigation gps_navigation.launch.py use_offline_map:=True</pre
+      >
+      <p class="hint">
+        此命令恢复已保存地图，默认仅规划。实车启动参数
+        offline_enable_motion:=True 可启用行驶。卫星底图必须先与 RTK / SLAM 的
+        map 坐标配准，当前未配准底图会被拒绝用于实车导航。
+      </p>
+      <h3>先用模拟小车连接</h3>
+      <pre>
+ros2 launch songling_navigation offline_navigation.launch.py demo:=true enable_motion:=true</pre
+      >
+      <p class="hint">
+        两种启动方式选一种。仿真默认起点为 map (0,
+        0)，需落在可行驶区。启动后刷新本页，保存并应用地图，再选终点、仅规划。
+      </p>
+      <p class="hint">
+        跨设备时 ROS_DOMAIN_ID 需一致，并允许 DDS
+        通信。浏览器仍访问运行服务的地址；同机为 http://127.0.0.1:8080。
+      </p>
+    </dialog>
+    <dialog id="import-dialog">
+      <form id="import-form">
+        <div class="section-title">
+          <b>导入离线地图</b
+          ><button type="button" id="import-close">关闭</button>
+        </div>
+        <p class="hint">
+          选择 ROS 地图 YAML 和它对应的 PGM / PNG
+          图片。恢复园区地图包时，同时选择 basemap.png 彩色底图，可一并载入
+          project.json。
+        </p>
+        <label class="field"
+          >地图 YAML<input
+            id="yaml-file"
+            type="file"
+            accept=".yaml,.yml"
+            required /></label
+        ><label class="field"
+          >地图图片<input
+            id="image-file"
+            type="file"
+            accept=".pgm,.png,.jpg,.jpeg"
+            required /></label
+        ><label class="field"
+          >彩色底图（园区地图包需要）<input
+            id="basemap-file"
+            type="file"
+            accept=".png,.jpg,.jpeg" /></label
+        ><label class="field"
+          >标注项目（可选）<input
+            id="project-file"
+            type="file"
+            accept=".json" /></label
+        ><button class="primary full" type="submit">导入并保存新地图</button>
+        <p class="hint">当前地图的历史快照会保留在本地数据目录。</p>
+      </form>
+    </dialog>
+  </body>
+</html>

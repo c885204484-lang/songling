@@ -1,4 +1,4 @@
-navsat_transform:
+navsat_transform_node:
   ros__parameters:
     frequency: 10.0
     delay: 0.0
@@ -9,10 +9,10 @@ navsat_transform:
     broadcast_utm_transform: false
     
     # 👇 这行一定要改回 true，之前你截图里写的是 false
-    use_odometry_yaw: false  
+    use_odometry_yaw: true
     
-    wait_for_datum: false  #（在 wait_for_datum: false 的情况下），navsat_transform 会将这第一个经纬度坐标作为地图的 $(0, 0)$ 原点。  
-
+    wait_for_datum: true  #（在 wait_for_datum: false 的情况下），navsat_transform 会将这第一个经纬度坐标作为地图的 $(0, 0)$ 原点。  
+    datum: [30.2549389623, 120.2941029693, 0.0]
     map_frame: map
     odom_frame: odom
     base_link_frame: base_link

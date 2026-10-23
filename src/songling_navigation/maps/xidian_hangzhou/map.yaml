@@ -1,0 +1,31 @@
+image: occupancy.pgm
+display_image: basemap.png
+mode: trinary
+resolution: 0.5158317638866912
+origin:
+- -412.66541110935293
+- -412.66541110935293
+- 0.0
+negate: 0
+free_thresh: 0.25
+occupied_thresh: 0.65
+site:
+  id: xidian_hangzhou_lvxuelu177
+  name: 西安电子科技大学杭州研究院 · 新园区
+  address: 浙江省杭州市萧山区宁围街道旅学路177号
+  provider: 高德地图
+  attribution: 卫星底图 © 高德地图
+  poi_id: B0K3JCDB79
+  basemap_type: satellite
+georeference:
+  source_crs: GCJ-02
+  map_crs: local_east_north
+  center_gcj02:
+  - 120.29990136623383
+  - 30.253798718938953
+  anchor_wgs84:
+  - 120.29541253050003
+  - 30.256209287176468
+  zoom: 18
+  scale: 1
+  navigation_aligned: false

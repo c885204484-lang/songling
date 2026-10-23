@@ -227,6 +227,15 @@ global_costmap:
       height: 300
       track_unknown_space: true
       plugins: ["obstacle_layer", "inflation_layer"]
+      # 高德语义掩码（水域/绿化/田径场/主干道）生成的禁行层。
+      # amap_keepout_mask 节点会同时发布 /amap_keepout_mask 和
+      # /costmap_filter_info，因此不需要额外的 map_server。
+      filters: ["amap_keepout_filter"]
+      amap_keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "/costmap_filter_info"
+        transform_tolerance: 1.0
       rolling_window: true
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"

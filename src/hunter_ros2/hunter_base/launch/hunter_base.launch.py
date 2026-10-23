@@ -19,6 +19,8 @@ def generate_launch_description():
         Node(
             package='hunter_base',
             executable='hunter_base_node',
+            respawn=True,
+            respawn_delay=2.0,
             output='screen',
             emulate_tty=True,
             parameters=[{

@@ -3,6 +3,9 @@
     frequency: 50.0
     sensor_timeout: 0.1
     two_d_mode: true
+    # Limit position covariance growth while stationary. A fresh output stamp
+    # alone does not imply fresh wheel measurements; the workbench checks both.
+    dynamic_process_noise_covariance: true
     
     # 🌟 核心修改 1：让 EKF 重新掌权！必须改成 true，否则 EKF 就算算得再准也发不出去。
     publish_tf: true    
@@ -36,7 +39,5 @@
     imu0_relative: false
     imu0_remove_gravitational_acceleration: true
     
-    # 3. 强制注入协方差 (覆盖雷达发出的全 0 错误)
-    imu0_orientation_covariance: [0.05, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0, 0.05]
-    imu0_angular_velocity_covariance: [0.05, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0, 0.05]
-    imu0_linear_acceleration_covariance: [0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1]
+    # Covariance comes from the IMU message, set by the Unitree driver.
+    # robot_localization has no imu0_*_covariance override parameters.

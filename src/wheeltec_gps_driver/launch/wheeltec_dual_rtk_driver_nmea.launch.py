@@ -19,7 +19,10 @@ import sys
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription, LaunchIntrospector, LaunchService
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros import actions
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -29,9 +32,20 @@ def generate_launch_description():
         package='nmea_navsat_driver',
         executable='nmea_serial_driver',
         output='screen',
-        parameters=[config_file])
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[config_file, {
+            'port': LaunchConfiguration('port'),
+            'baud': ParameterValue(LaunchConfiguration('baud'), value_type=int),
+        }])
 
-    return LaunchDescription([driver_node])
+    return LaunchDescription([
+        DeclareLaunchArgument('port', default_value='/dev/wheeltec_gnss',
+                              description='GPS serial device'),
+        DeclareLaunchArgument('baud', default_value='115200',
+                              description='GPS serial baud rate'),
+        driver_node,
+    ])
 
 
 def main(argv):

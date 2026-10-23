@@ -1,7 +1,14 @@
 import os
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, ExecuteProcess, LogInfo
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    ExecuteProcess,
+    LogInfo,
+)
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
@@ -16,6 +23,27 @@ def generate_launch_description():
         robot_desc = infp.read()
     
     return LaunchDescription([
+        DeclareLaunchArgument('gps_port', default_value='/dev/ttyACM0',
+                              description='GPS serial device'),
+        DeclareLaunchArgument('gps_baud', default_value='115200',
+                              description='GPS serial baud rate'),
+        DeclareLaunchArgument('use_offline_map', default_value='False',
+                              description='Use the local annotation workbench and constrained Nav2'),
+        DeclareLaunchArgument('offline_map', default_value='', description='Original map YAML in the GPS map frame'),
+        DeclareLaunchArgument('offline_store', default_value=os.path.expanduser('~/.local/share/songling/offline_maps/xidian_hangzhou_lvxuelu177')),
+        DeclareLaunchArgument('offline_enable_motion', default_value='False'),
+        DeclareLaunchArgument('offline_host', default_value='127.0.0.1'),
+        DeclareLaunchArgument('offline_port', default_value='8080'),
+        DeclareLaunchArgument(
+            'use_amap_mask',
+            default_value='True',
+            description='Publish the Amap semantic keepout mask for Nav2',
+        ),
+        DeclareLaunchArgument(
+            'amap_mask_params',
+            default_value=os.path.join(pkg_dir, 'config', 'amap_keepout_mask.yaml'),
+            description='Parameter file for the Amap keepout mask node',
+        ),
         # ==========================================
         # 1. 底盘
         # ==========================================
@@ -35,7 +63,10 @@ def generate_launch_description():
                 os.path.join(get_package_share_directory('wheeltec_gps_driver'), 'launch',
                             'wheeltec_dual_rtk_driver_nmea.launch.py')
             ),
-            launch_arguments={'port': '/dev/ttyACM0'}.items()
+            launch_arguments={
+                'port': LaunchConfiguration('gps_port'),
+                'baud': LaunchConfiguration('gps_baud'),
+            }.items()
         ),
         
         # ==========================================
@@ -138,6 +169,25 @@ def generate_launch_description():
         ),
 
         # ==========================================
+        # 7.5. 高德语义掩码（水域/绿化/田径场/主干道禁行）
+        # ==========================================
+        LogInfo(msg="\n🌊 [7.5/8] 启动模块: 高德掩码地图 (Nav2 KeepoutFilter)..."),
+        Node(
+            package='songling_navigation',
+            executable='amap_keepout_mask.py',
+            name='amap_keepout_mask',
+            output='screen',
+            parameters=[
+                LaunchConfiguration('amap_mask_params'),
+                {'use_sim_time': False}
+            ],
+            condition=IfCondition(PythonExpression([
+                "'", LaunchConfiguration('use_amap_mask'), "'.lower() == 'true' and '",
+                LaunchConfiguration('use_offline_map'), "'.lower() != 'true'",
+            ])),
+        ),
+
+        # ==========================================
         # 8. Nav2 大脑
         # ==========================================
         LogInfo(msg="\n🚀 [8/8] 启动模块: Nav2 自动驾驶导航大脑 (工厂模式)..."),
@@ -145,6 +195,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 os.path.join(get_package_share_directory('nav2_bringup'), 'launch', 'navigation_launch.py')
             ),
+            condition=UnlessCondition(LaunchConfiguration('use_offline_map')),
             launch_arguments={
                 'use_sim_time': 'False',
                 'autostart': 'True',
@@ -155,6 +206,20 @@ def generate_launch_description():
                 # 'params_file': os.path.join(pkg_dir, 'config', 'nav2_official_base_GD.yaml')
                 # 'params_file': os.path.join(pkg_dir, 'config', 'nav2_official_base_new_sph.yaml')
             }.items()
+        ),
+
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(pkg_dir, 'launch', 'offline_navigation.launch.py')),
+            condition=IfCondition(LaunchConfiguration('use_offline_map')),
+            launch_arguments={
+                'map': LaunchConfiguration('offline_map'),
+                'store': LaunchConfiguration('offline_store'),
+                'enable_motion': LaunchConfiguration('offline_enable_motion'),
+                'host': LaunchConfiguration('offline_host'),
+                'port': LaunchConfiguration('offline_port'),
+                'odom_topic': '/odometry/local',
+                'demo': 'false',
+            }.items(),
         ),
         
         LogInfo(msg="\n✅✅✅ [系统就绪] 所有核心组件调度完毕，等待各节点自检... ✅✅✅\n")

@@ -32,10 +32,7 @@
 
 
 
-    # 🌟 强行注入协方差，拯救崩溃的矩阵计算
-    imu0_orientation_covariance: [0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01]
-    imu0_angular_velocity_covariance: [0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01]
-    imu0_linear_acceleration_covariance: [0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1]
+    # Measurement covariance is supplied in the IMU messages by the driver.
 
     # 3. odom1: GPS里程计 (只取GPS的绝对位置)
     odom1: /odometry/gps

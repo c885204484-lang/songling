@@ -139,7 +139,25 @@ void HunterBaseRos::Run() {
     messenger->SetupSubscription();
     rclcpp::Rate rate(50);
     keep_running_ = true;
-    while (keep_running_) {
+    const auto connected_at = SdkClock::now();
+    while (keep_running_ && rclcpp::ok()) {
+      // Do not republish old CAN values with a fresh ROS timestamp. Exit so the
+      // launch supervisor reconnects after a removed/re-enumerated USB adapter.
+      if (!simulated_robot_) {
+        const auto now = SdkClock::now();
+        const auto state = robot_->GetRobotState();
+        const double age = std::chrono::duration<double>(now - state.time_stamp).count();
+        if (age > 1.0) {
+          if (std::chrono::duration<double>(now - connected_at).count() < 1.0) {
+            rclcpp::spin_some(shared_from_this());
+            rate.sleep();
+            continue;
+          }
+          robot_->SetMotionCommand(0.0, 0.0);
+          RCLCPP_ERROR(get_logger(), "CAN feedback timed out; stopping chassis driver for reconnection");
+          return;
+        }
+      }
       messenger->PublishStateToROS();
       // robot_->EnableCommandedMode();
       rclcpp::spin_some(shared_from_this());

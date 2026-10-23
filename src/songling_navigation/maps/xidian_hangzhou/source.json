@@ -1,0 +1,36 @@
+{
+  "downloaded": "2026-10-20",
+  "provider": "Amap Satellite Tiles",
+  "provider_url": "https://webst01.is.autonavi.com/appmaptile",
+  "official_address_source": "https://hyyzp.xidian.edu.cn/portal/index",
+  "poi": {
+    "id": "B0K3JCDB79",
+    "name": "西安电子科技大学杭州研究院",
+    "address": "宁围街道旅学路177号",
+    "location": "120.300420,30.252814",
+    "type": "科教文化服务;科研机构;科研机构",
+    "pname": "浙江省",
+    "cityname": "杭州市",
+    "adname": "萧山区",
+    "entr_location": "120.298566,30.250866"
+  },
+  "center_gcj02": [
+    120.29990136623383,
+    30.253798718938953
+  ],
+  "anchor_wgs84": [
+    120.29541253050003,
+    30.256209287176468
+  ],
+  "resolution_m_per_pixel": 0.5158317638866912,
+  "dimensions": [
+    1600,
+    1600
+  ],
+  "occupancy_note": "Cartographic basemap; occupancy.pgm is a blank annotation canvas. No survey or automatic traversability claim.",
+  "style": 6,
+  "zoom": 18,
+  "tile_count": 49,
+  "imagery_capture_date": "not supplied by provider",
+  "street_map": "street.png"
+}

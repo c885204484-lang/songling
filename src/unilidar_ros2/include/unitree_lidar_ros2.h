@@ -13,6 +13,8 @@
 #include <iterator>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <stdexcept>
 
 #include <pcl/io/pcd_io.h>
 #include <pcl/point_types.h>
@@ -74,6 +76,7 @@ protected:
 
     std::string imu_frame_;
     std::string imu_topic_;
+    double imu_angular_velocity_variance_;
 };
 
 ///////////////////////////////////////////////////////////////////
@@ -102,6 +105,12 @@ UnitreeLidarSDKNode::UnitreeLidarSDKNode(const rclcpp::NodeOptions &options)
 
     declare_parameter<std::string>("imu_frame", "unilidar_imu");
     declare_parameter<std::string>("imu_topic", "unilidar/imu");
+    // The SDK supplies no covariance. Zero would make the EKF treat the gyro
+    // as virtually exact. This is a conservative default, configurable after
+    // measuring the sensor noise (units: rad^2/s^2).
+    imu_angular_velocity_variance_ = declare_parameter<double>("imu_angular_velocity_variance", 0.0025);
+    if (!std::isfinite(imu_angular_velocity_variance_) || imu_angular_velocity_variance_ <= 0.0)
+        throw std::invalid_argument("imu_angular_velocity_variance must be finite and positive");
 
     work_mode_ = get_parameter("work_mode").as_int();
     initialize_type_ = get_parameter("initialize_type").as_int();
@@ -184,6 +193,9 @@ void UnitreeLidarSDKNode::timer_callback()
             imuMsg.angular_velocity.x = imu.angular_velocity[0];
             imuMsg.angular_velocity.y = imu.angular_velocity[1];
             imuMsg.angular_velocity.z = imu.angular_velocity[2];
+            imuMsg.angular_velocity_covariance[0] = imu_angular_velocity_variance_;
+            imuMsg.angular_velocity_covariance[4] = imu_angular_velocity_variance_;
+            imuMsg.angular_velocity_covariance[8] = imu_angular_velocity_variance_;
 
             imuMsg.linear_acceleration.x = imu.linear_acceleration[0];
             imuMsg.linear_acceleration.y = imu.linear_acceleration[1];

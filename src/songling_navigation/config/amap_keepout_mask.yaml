@@ -1,0 +1,65 @@
+# Amap semantic keepout mask for Nav2's KeepoutFilter.
+#
+# The centre is GCJ-02 (what Amap expects).  The node converts GCJ-02 ->
+# WGS-84 and fits a local affine against robot_localization's /fromLL service,
+# so the published grid is already expressed in the robot map frame.
+amap_keepout_mask:
+  ros__parameters:
+    amap_key: "ab24c47a195f096bd52f910f9ed3a14e"
+
+    # 图心选择：
+    #   gps   = 用启动时 /gps/fix 的 WGS-84 位置反算 GCJ 作为高德图心（推荐，
+    #           换场地/换校区都不用改参数）
+    #   fixed = 用下面的 center_lat_gcj/center_lon_gcj（离线预览/测试）
+    center_mode: "gps"
+    gps_topic: "/gps/fix"
+    gps_min_fixes: 5
+
+    # 仅 fixed 模式使用；默认值是高德拾取器里体育职院的 GCJ 中心。
+    center_lat_gcj: 30.2544
+    center_lon_gcj: 120.2941
+    zoom: 17
+    size: 1024
+    scale: 2
+
+    # Keepout classes.  Campus walkways are deliberately NOT classified.
+    classes: ["water", "green", "track", "major_road"]
+    water_min_area_m2: 100.0
+    green_min_area_m2: 20.0
+    track_min_area_m2: 50.0
+    road_min_area_m2: 50.0
+    road_close_m: 14.0
+    dilate_m: 0.3
+
+    # Output grid.  The Amap source is ~0.52 m/px, so 0.5 m keeps native
+    # detail while covering the whole campus.
+    roi_radius: 300.0
+    resolution: 0.5
+    max_grid_cells: 10000000
+    center_on_robot: false
+
+    # Nav2 keepout filter wiring.
+    mask_topic: "/amap_keepout_mask"
+    filter_info_topic: "/costmap_filter_info"
+    frame_id: "map"
+    # 0 = 只发一次（transient-local，晚启动的 filter 也能拿到）；设为 30.0 则每 30s 心跳一次 mask。
+    publish_period_s: 0.0
+
+    # Alignment.
+    fromll_service: "/fromLL"
+    control_half_size_m: 300.0
+    max_affine_residual_m: 3.0
+    # Offline/testing only: use a fixed WGS-84 anchor instead of /fromLL.
+    use_static_anchor: false
+    anchor_lat: 0.0
+    anchor_lon: 0.0
+    anchor_x: 0.0
+    anchor_y: 0.0
+    anchor_yaw_deg: 0.0
+
+    # Snapshots for inspection.
+    save_snapshot: true
+    output_dir: "/home/nvidia/songling/songling_ws/src/songling_navigation/PCD/amap_mask"
+    cache_dir: "~/.cache/songling/amap_mask"
+    cache_ttl_hours: 24.0
+    force_refresh: false

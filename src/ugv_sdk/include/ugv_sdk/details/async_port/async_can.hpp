@@ -57,7 +57,7 @@ class AsyncCAN : public std::enable_shared_from_this<AsyncCAN> {
 
   std::thread io_thread_;
 
-  int can_fd_;
+  int can_fd_ = -1;
   asio::posix::basic_stream_descriptor<> socketcan_stream_;
 
   struct can_frame rcv_frame_;
