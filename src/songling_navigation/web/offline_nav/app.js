@@ -202,7 +202,7 @@ function draw() {
   }
   if (
     runtime.path?.length &&
-    ["规划完成", "导航中", "规划中", "正在接受目标", "已到达"].includes(runtime.navigation)
+    ["规划完成", "导航中", "规划中", "正在接受目标", "已到达", "取消中", "任务失败", "已取消"].includes(runtime.navigation)
   ) polygon(runtime.path, "#448eff", false);
   ctx.fillStyle = "#efb044";
   for (const [x, y] of runtime.scan_points || []) {

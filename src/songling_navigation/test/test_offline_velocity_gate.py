@@ -73,6 +73,7 @@ def state():
         busy=True,
         navigation="导航中",
         pose=dict(x=0.0, y=0.0, yaw=0.0),
+        pose_seen=now,
         scan_seen=now,
         cmd_seen=now,
         cmd=command,
@@ -199,6 +200,54 @@ def test_previous_task_path_cannot_release_motion_gate():
     path.header.stamp.sec = 1
     NavigationBridge.on_path(data, path)
     assert data.tracking_path == []
+
+
+def replan_message(points):
+    from nav_msgs.msg import Path
+    from geometry_msgs.msg import PoseStamped
+    path = Path()
+    path.header.frame_id = 'map'
+    path.header.stamp.sec = 2
+    for x, y in points:
+        pose = PoseStamped()
+        pose.pose.position.x, pose.pose.position.y = x, y
+        path.poses.append(pose)
+    return path
+
+
+def test_safe_replan_updates_reference_before_following_new_curve():
+    data = ticking_state()
+    data.operation_started_ns = 1_000_000_000
+    # The vehicle is still on the old path when Nav2 routes around an obstacle.
+    path = replan_message([[0., 0.], [0., -2.], [39., 0.]])
+    NavigationBridge.on_path(data, path)
+    assert data.tracking_path == data.path
+    assert NavigationBridge.velocity_block_reason(data) == '速度指令过期'
+    # A fresh controller command follows the new route safely; the previous
+    # implementation wrongly cancelled it against the original horizontal path.
+    data.pose['y'], data.pose['yaw'] = -.2, -math.pi / 2
+    data.cmd_seen = time.monotonic()
+    assert NavigationBridge.velocity_block_reason(data) == ''
+
+
+@pytest.mark.parametrize('change', ['wrong_goal', 'remote_start', 'stale_pose', 'cancelling', 'latched_fault'])
+def test_unrelated_or_unsafe_replan_cannot_replace_reference(change):
+    data = ticking_state()
+    data.operation_started_ns = 1_000_000_000
+    original = list(data.tracking_path)
+    points = [[0., 0.], [0., -2.], [39., 0.]]
+    if change == 'wrong_goal':
+        points[-1] = [30., 0.]
+    elif change == 'remote_start':
+        points[0] = [2., 0.]
+    elif change == 'stale_pose':
+        data.pose_seen = 0.
+    elif change == 'cancelling':
+        data.navigation = '取消中'
+    else:
+        data.stop_reason = '预测轨迹偏离本次规划路径'
+    NavigationBridge.on_path(data, replan_message(points))
+    assert data.tracking_path == original
 
 
 @pytest.mark.parametrize('value', [math.nan, -1.])

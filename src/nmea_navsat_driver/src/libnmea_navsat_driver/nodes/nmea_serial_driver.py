@@ -35,6 +35,7 @@ import serial
 import rclpy
 
 from libnmea_navsat_driver.driver import Ros2NMEADriver
+from libnmea_navsat_driver.serial_buffer import NMEABuffer
 
 
 def main(args=None):
@@ -47,18 +48,24 @@ def main(args=None):
     serial_baud = driver.declare_parameter('baud', 115200).value
 
     try:
-        GPS = serial.Serial(port=serial_port, baudrate=serial_baud, timeout=2)
+        GPS = serial.Serial(port=serial_port, baudrate=serial_baud, timeout=.2)
         driver.get_logger().info("Successfully connected to {0} at {1}.".format(serial_port, serial_baud))
+        buffer = NMEABuffer()
         try:
             while rclpy.ok():
-                data = GPS.readline().strip()
-                try:
-                    if isinstance(data, bytes):
-                        data = data.decode("utf-8")
-                    driver.add_sentence(data, frame_id)
-                except ValueError as e:
-                    driver.get_logger().warn(
-                        "Value error, likely due to missing fields in the NMEA message. message was: %s. " % e)
+                # readline() reads byte by byte in pyserial. A high-rate GNSS
+                # stream can accumulate seconds of stale measurements while
+                # every ROS header still receives the current wall-clock time.
+                data = GPS.read(min(65536, max(1, GPS.in_waiting)))
+                waiting = min(GPS.in_waiting, 65536 - len(data))
+                if waiting:
+                    data += GPS.read(waiting)
+                for sentence in buffer.feed(data):
+                    try:
+                        driver.add_sentence(sentence, frame_id)
+                    except ValueError as e:
+                        driver.get_logger().warn(
+                            "Value error, likely due to missing fields in the NMEA message. message was: %s. " % e)
 
         except Exception as e:
             driver.get_logger().error("Ros error: {0}".format(e))

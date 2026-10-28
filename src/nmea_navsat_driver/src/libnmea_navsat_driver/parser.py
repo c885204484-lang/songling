@@ -34,7 +34,7 @@ import re
 import time
 import calendar
 import math
-import rclpy
+import rclpy.logging
 
 logger = rclpy.logging.get_logger('nmea_navsat_driver')
 
@@ -63,7 +63,8 @@ def convert_longitude(field):
 
 def convert_time(nmea_utc):
     # Get current time in UTC for date information
-    utc_struct = time.gmtime()  # immutable, so cannot modify this one
+    now = time.time()
+    utc_struct = time.gmtime(now)  # immutable, so cannot modify this one
     utc_list = list(utc_struct)
     # If one of the time fields is empty, return NaN seconds
     if not nmea_utc[0:2] or not nmea_utc[2:4] or not nmea_utc[4:6]:
@@ -71,11 +72,16 @@ def convert_time(nmea_utc):
     else:
         hours = int(nmea_utc[0:2])
         minutes = int(nmea_utc[2:4])
-        seconds = int(nmea_utc[4:6])
+        seconds = float(nmea_utc[4:])
         utc_list[3] = hours
         utc_list[4] = minutes
-        utc_list[5] = seconds
-        unix_time = calendar.timegm(tuple(utc_list))
+        utc_list[5] = 0
+        unix_time = calendar.timegm(tuple(utc_list)) + seconds
+        # An epoch just before midnight can arrive just after midnight.
+        if unix_time - now > 43200:
+            unix_time -= 86400
+        elif now - unix_time > 43200:
+            unix_time += 86400
         return unix_time
 
 

@@ -171,7 +171,7 @@ class NavigationBridge(Node):
                 message=self.message,
                 guard=self.guard_reason,
                 pose=self.pose if time.monotonic() - self.pose_seen <= 0.5 else None,
-                path=copy.deepcopy(self.path),
+                path=copy.deepcopy(self.tracking_path or self.path),
                 scan_points=copy.deepcopy(
                     self.scan_points[:: max(1, len(self.scan_points) // 800)]
                 ),
@@ -343,11 +343,25 @@ class NavigationBridge(Node):
                 if len(path) < 2 or not all(math.isfinite(v) for p in path for v in p):
                     return
                 self.path = path
-                # Latch the first path of this task. Periodic replanning from a
-                # deviated pose must not erase the tracking error or resume motion.
-                if self.tracking_goal and not self.tracking_path and self.busy:
-                    if math.dist(path[-1], self.tracking_goal) <= .5:
-                        self.tracking_path = copy.deepcopy(path)
+                if (not self.tracking_goal or not self.busy
+                        or self.navigation not in ("导航中", "正在接受目标")
+                        or self.stop_reason
+                        or math.dist(path[-1], self.tracking_goal) > .5):
+                    return
+                # Check the OLD reference before accepting a replan. A path
+                # starting at an already deviated pose must never clear a fault.
+                if NavigationBridge.tracking_block_reason(self):
+                    return
+                if (not self.pose or time.monotonic() - self.pose_seen > .5
+                        or math.dist(path[0], [self.pose["x"], self.pose["y"]]) > .75):
+                    return
+                # Nav2 can legitimately replace an obstructed path. Following
+                # that new path while predicting against the first path causes
+                # false stops. The gate and display must use the same reference.
+                self.tracking_path = copy.deepcopy(path)
+                # Wait for a fresh controller command after the path change;
+                # the previous command may still belong to the previous path.
+                self.cmd_seen = 0.0
 
     def on_scan(self, msg):
         self.pending_scan = msg
