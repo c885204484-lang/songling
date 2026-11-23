@@ -7,9 +7,12 @@ import math
 import queue
 import time
 import threading
+import tempfile
+from pathlib import Path as FilePath
 
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import (
     QoSProfile,
@@ -18,10 +21,15 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 from rclpy.time import Time
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Path, Odometry
-from nav2_msgs.action import ComputePathToPose, NavigateToPose, NavigateThroughPoses
-from nav2_msgs.msg import CostmapFilterInfo
+from nav2_msgs.action import (
+    ComputePathToPose,
+    ComputePathThroughPoses,
+    NavigateToPose,
+    NavigateThroughPoses,
+)
+from nav2_msgs.msg import CostmapFilterInfo, SpeedLimit
 from sensor_msgs.msg import LaserScan, NavSatFix
 from robot_localization.srv import FromLL
 from rcl_interfaces.msg import Log
@@ -30,6 +38,18 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener, TransformException
 
 from .maps import finite
+from .planner_sync import PlannerResolutionSync
+from .behavior import snapshot_navigation_trees
+from .mission import MissionJournal
+from .collision import CollisionRecorder
+from .heading_search import HeadingSearch, stamped_pose
+
+
+SPEED_GEARS_MPS = {kmh: kmh / 3.6 for kmh in (2, 4, 6)}
+MAX_GEAR_SPEED_MPS = max(SPEED_GEARS_MPS.values())
+DEFAULT_LINEAR_LIMIT = 0.7
+ANGULAR_LIMIT = 0.8
+PREDICTION_HORIZON = 1.5
 
 
 def yaw_of(q):
@@ -44,7 +64,7 @@ def valid_transform(transform):
     )
 
 
-def distance_to_path(x, y, path):
+def distance_to_path(x, y, path, within=0.):
     """Distance to segments, including repeated points and sparsely sampled paths."""
     result = math.inf
     for a, b in zip(path, path[1:]):
@@ -52,6 +72,8 @@ def distance_to_path(x, y, path):
         length2 = dx * dx + dy * dy
         t = max(0., min(1., ((x - a[0]) * dx + (y - a[1]) * dy) / length2)) if length2 else 0.
         result = min(result, math.hypot(x - a[0] - t * dx, y - a[1] - t * dy))
+        if result <= within:
+            break
     return result
 
 
@@ -77,9 +99,11 @@ class NavigationBridge(Node):
         super().__init__("offline_map_workbench")
         self.app = app
         self.motion, self.demo = motion, demo
+        self.use_lidar = self.declare_parameter("use_lidar", True).value
         self.connection = dict(
             domain_id=self.context.get_domain_id(),
             scan_topic=scan_topic,
+            lidar_enabled=self.use_lidar,
             simulated=demo,
             planner_ready=False,
             navigator_ready=False,
@@ -88,6 +112,14 @@ class NavigationBridge(Node):
         self.urgent_requests = queue.Queue()
         self.deferred_request = None
         self.state_lock = threading.RLock()
+        # Keep sensor receipt independent of map edits and control callbacks.
+        self.telemetry_group = MutuallyExclusiveCallbackGroup()
+        from ament_index_python.packages import get_package_share_directory
+        self.behavior_trees = snapshot_navigation_trees(
+            FilePath(get_package_share_directory("songling_navigation")) / "behavior_trees",
+            tempfile.mkdtemp(prefix="songling-navigation-bt-"),
+        )
+        self.get_logger().info(f"Navigation trees: {self.behavior_trees}")
         self.active_model = self.active_grid = None
         self.source_model = None
         self.applied_at = 0.0
@@ -97,8 +129,12 @@ class NavigationBridge(Node):
         self.operation = 0
         self.operation_started_ns = 0
         self.failure_detail = ""
+        store = getattr(app, "store", None)
+        self.mission = MissionJournal(store.root / "mission.json" if store else None)
         self.stop_reason = ""
         self.action_handle = None
+        self.heading_search = None
+        self.planned_targets = []
         self.navigation = "待应用地图"
         self.message = ""
         self.path = []
@@ -106,6 +142,13 @@ class NavigationBridge(Node):
         self.tracking_goal = None
         self.odometry = None
         self.odometry_seen = 0.0
+        self.odometry_stamp_ns = 0
+        self.odometry_waiting = False
+        self.odometry_wait_started = 0.0
+        self.odometry_recovery_samples = 0
+        self.odometry_events = []
+        self.wheel_odometry = None
+        self.wheel_odometry_seen = 0.0
         self.pose = None
         self.pose_seen = 0.0
         self.gps_fix = None
@@ -118,6 +161,7 @@ class NavigationBridge(Node):
         self.pending_scan = None
         self.cmd = Twist()
         self.cmd_seen = 0.0
+        self.speed_gear_kmh = None
         self.guard_reason = "尚未导航"
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, self)
@@ -127,6 +171,9 @@ class NavigationBridge(Node):
             reliability=ReliabilityPolicy.RELIABLE,
         )
         self.map_pub = self.create_publisher(OccupancyGrid, "/map", durable)
+        self.footprint_map_pub = self.create_publisher(
+            OccupancyGrid, "/offline_nav/footprint_map", durable
+        )
         self.source_pub = self.create_publisher(
             OccupancyGrid, "/offline_nav/source_map", durable
         )
@@ -137,28 +184,43 @@ class NavigationBridge(Node):
             CostmapFilterInfo, "/offline_nav/filter_info", durable
         )
         self.vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.speed_limit_pub = self.create_publisher(SpeedLimit, "/offline_nav/speed_limit", durable)
         self.obstacle_pub = self.create_publisher(
             String, "/offline_nav/demo_obstacles", 1
         )
         self.create_subscription(Twist, "/offline_nav/cmd_vel", self.on_cmd, 10)
-        self.create_subscription(
-            LaserScan, scan_topic, self.on_scan, qos_profile_sensor_data
-        )
+        if self.use_lidar:
+            self.create_subscription(
+                LaserScan, scan_topic, self.on_scan, qos_profile_sensor_data
+            )
         self.create_subscription(Path, "/plan", self.on_path, 10)
         odom_topic = self.declare_parameter("odom_topic", "/odom").value
-        self.create_subscription(Odometry, odom_topic, self.on_odometry, qos_profile_sensor_data)
-        self.create_subscription(NavSatFix, "/gps/fix", self.on_fix, qos_profile_sensor_data)
+        self.require_wheel_odometry = not demo and odom_topic != "/odom"
+        self.create_subscription(Odometry, odom_topic, self.on_odometry, qos_profile_sensor_data,
+                                 callback_group=self.telemetry_group)
+        if self.require_wheel_odometry:
+            self.create_subscription(Odometry, "/odom", self.on_wheel_odometry, qos_profile_sensor_data,
+                                     callback_group=self.telemetry_group)
+        self.create_subscription(NavSatFix, "/gps/fix", self.on_fix, qos_profile_sensor_data,
+                                 callback_group=self.telemetry_group)
         self.create_subscription(Log, "/rosout", self.on_navigation_log, 50)
-        self.create_subscription(HunterStatus, "/hunter_status", self.on_chassis, qos_profile_sensor_data)
+        self.create_subscription(HunterStatus, "/hunter_status", self.on_chassis, qos_profile_sensor_data,
+                                 callback_group=self.telemetry_group)
         self.plan_client = ActionClient(
             self, ComputePathToPose, "/compute_path_to_pose"
+        )
+        self.plan_route_client = ActionClient(
+            self, ComputePathThroughPoses, "/compute_path_through_poses"
         )
         self.goal_client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
         self.route_client = ActionClient(
             self, NavigateThroughPoses, "/navigate_through_poses"
         )
+        self.planner_sync = PlannerResolutionSync(self)
+        self.collision_recorder = CollisionRecorder(self, store.root / "diagnostics" if store else None)
         self.create_timer(0.05, self.tick)
-        self.create_timer(0.1, self.telemetry)
+        self.create_timer(1.0, self.publish_speed_limit)
+        self.create_timer(0.1, self.telemetry, callback_group=self.telemetry_group)
 
     def status(self):
         with self.state_lock:
@@ -166,12 +228,16 @@ class NavigationBridge(Node):
                 mode="ros",
                 connection=dict(self.connection),
                 motion_enabled=self.motion,
+                speed_gear_kmh=self.speed_gear_kmh,
                 busy=self.busy,
                 navigation=self.navigation,
                 message=self.message,
+                mission=self.mission.summary(self.app.map_id, self.app.project),
+                collision_events=list(self.collision_recorder.events),
                 guard=self.guard_reason,
                 pose=self.pose if time.monotonic() - self.pose_seen <= 0.5 else None,
                 path=copy.deepcopy(self.tracking_path or self.path),
+                planned_targets=copy.deepcopy(self.planned_targets),
                 scan_points=copy.deepcopy(
                     self.scan_points[:: max(1, len(self.scan_points) // 800)]
                 ),
@@ -188,11 +254,46 @@ class NavigationBridge(Node):
                 ),
                 odometry=dict(**(self.odometry or {}),
                     age_s=round(time.monotonic() - self.odometry_seen, 2) if self.odometry_seen else None,
+                    waiting=getattr(self, "odometry_waiting", False),
+                    events=copy.deepcopy(getattr(self, "odometry_events", [])),
                     ready=not bool(self.odometry_block_reason()),
                     message=self.odometry_block_reason() or "里程计正常"),
+                wheel_odometry=dict(**(self.wheel_odometry or {}),
+                    required=self.require_wheel_odometry,
+                    age_s=round(time.monotonic() - self.wheel_odometry_seen, 2) if self.wheel_odometry_seen else None,
+                    ready=not bool(self.wheel_odometry_block_reason()),
+                    message=self.wheel_odometry_block_reason() or "原始底盘里程计正常"),
             )
 
+    def on_wheel_odometry(self, msg):
+        age = (self.get_clock().now() - Time.from_msg(msg.header.stamp)).nanoseconds / 1e9
+        if not -.1 <= age <= .5:
+            return
+        values = (msg.twist.twist.linear.x, msg.twist.twist.linear.y,
+                  msg.twist.twist.angular.z, msg.twist.covariance[0])
+        valid = (all(math.isfinite(v) for v in values)
+                 and values[3] >= 0 and msg.child_frame_id == "base_link")
+        observed_at = time.monotonic() - max(0, age)
+        with self.state_lock:
+            if observed_at < self.wheel_odometry_seen:
+                return
+            self.wheel_odometry = dict(
+                v=values[0] if math.isfinite(values[0]) else None,
+                valid=valid, frame=msg.child_frame_id)
+            self.wheel_odometry_seen = observed_at
+
+    def wheel_odometry_block_reason(self):
+        if not getattr(self, "require_wheel_odometry", False):
+            return ""
+        if (not self.wheel_odometry
+                or time.monotonic() - self.wheel_odometry_seen > .5):
+            return "底盘原始里程计中断：检查 USB/CAN 连接，滤波器外推不能代替实测反馈"
+        if not self.wheel_odometry["valid"]:
+            return "底盘原始里程计异常：速度、协方差或参考坐标系无效"
+        return ""
+
     def on_odometry(self, msg):
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         age = (self.get_clock().now() - Time.from_msg(msg.header.stamp)).nanoseconds / 1e9
         values = (msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.angular.z,
                   msg.twist.covariance[0], msg.twist.covariance[7], msg.twist.covariance[35],
@@ -217,27 +318,91 @@ class NavigationBridge(Node):
         # map->base_link supplies the navigation pose; a fixed upper bound on
         # local pose covariance incorrectly disables a healthy long-running EKF.
         with self.state_lock:
+            if stamp_ns <= getattr(self, "odometry_stamp_ns", 0):
+                return
+            observed_at = time.monotonic() - max(0, age)
+            if getattr(self, "odometry_waiting", False):
+                # Recovery uses the same freshness contract as motion gating.
+                # A fixed 0.2s cadence incorrectly rejects delayed valid data.
+                consecutive = observed_at - self.odometry_seen <= .5
+                self.odometry_recovery_samples = (
+                    getattr(self, "odometry_recovery_samples", 0) + 1
+                    if consecutive and not detail else (0 if detail else 1)
+                )
+            self.odometry_stamp_ns = stamp_ns
             self.odometry = dict(v=values[0] if math.isfinite(values[0]) else None,
                                  vy=values[1] if math.isfinite(values[1]) else None,
                                  w=values[2] if math.isfinite(values[2]) else None,
                                  valid=not detail, detail=detail,
                                  velocity_variance=[v if math.isfinite(v) else None for v in values[3:6]],
                                  pose_variance=[v if math.isfinite(v) else None for v in values[6:]])
-            self.odometry_seen = time.monotonic() - max(0, age)
+            self.odometry_seen = observed_at
 
     def odometry_block_reason(self):
         if self.demo:
             return ""
+        raw_reason = NavigationBridge.wheel_odometry_block_reason(self)
+        if raw_reason:
+            return raw_reason
         o = self.odometry
         if o is None or time.monotonic() - self.odometry_seen > .5:
-            return "里程计反馈过期：禁止使用滤波器外推数据启动导航"
+            return "里程计反馈过期：已停止速度输出，等待有效反馈"
         if not o["valid"]:
             return "里程计数值异常：" + o.get("detail", "请检查底盘断流及局部滤波器")
         if abs(o["v"]) > 2 or abs(o["vy"]) > .2 or abs(o["w"]) > 1:
             return f"里程计速度异常：前向 {o['v']:.2f}、横向 {o['vy']:.2f} m/s、角速度 {o['w']:.2f} rad/s"
         if self.chassis and abs(o["v"] - self.chassis["linear_velocity"]) > .25:
             return f"里程计与底盘速度不一致：滤波 {o['v']:.2f} / 底盘 {self.chassis['linear_velocity']:.2f} m/s"
+        if (getattr(self, "odometry_waiting", False)
+                and getattr(self, "odometry_recovery_samples", 0) < 3):
+            return "里程计恢复确认中：保持零速，等待连续 3 帧有效反馈"
         return ""
+
+    def record_odometry_event(self, event):
+        entry = dict(event=event, time_ns=time.time_ns(),
+                     age_s=round(time.monotonic() - self.odometry_seen, 3),
+                     chassis_age_s=round(time.monotonic() - self.chassis_seen, 3),
+                     recovery_samples=getattr(self, "odometry_recovery_samples", 0))
+        if getattr(self, "require_wheel_odometry", False):
+            entry["wheel_age_s"] = (round(time.monotonic() - self.wheel_odometry_seen, 3)
+                                    if self.wheel_odometry_seen else None)
+        self.odometry_events = (getattr(self, "odometry_events", []) + [entry])[-10:]
+        if hasattr(self, "get_logger"):
+            self.get_logger().warning(f"Odometry watchdog: {entry}")
+
+    def odometry_navigation_fault(self):
+        """Hold zero immediately for a brief gap; cancel only sustained loss.
+
+        The velocity watchdog still rejects samples older than 0.5 seconds.
+        Recovery needs three consecutive samples and a new controller command.
+        """
+        reason = NavigationBridge.odometry_block_reason(self)
+        now = time.monotonic()
+        delayed = reason.startswith(("里程计反馈过期", "里程计恢复确认中"))
+        if reason.startswith("底盘原始里程计"):
+            NavigationBridge.record_odometry_event(self, "wheel_feedback_unavailable")
+            return reason
+        if delayed:
+            if not getattr(self, "odometry_waiting", False):
+                self.odometry_waiting = True
+                self.odometry_wait_started = now
+                self.odometry_recovery_samples = 0
+                NavigationBridge.record_odometry_event(self, "waiting")
+                self.stop()
+            # Fresh valid samples are recovery progress. Do not cancel merely
+            # because a wall-clock deadline since the FIRST gap has expired.
+            if now - self.odometry_seen >= 1.5:
+                NavigationBridge.record_odometry_event(self, "timeout")
+                return f"里程计反馈持续中断，任务已停止（有效数据年龄 {now-self.odometry_seen:.2f} 秒）"
+            self.message = "里程计暂时延迟，已暂停输出；等待连续 3 帧有效反馈"
+            return ""
+        if not reason and getattr(self, "odometry_waiting", False):
+            NavigationBridge.record_odometry_event(self, "recovered")
+            self.odometry_waiting = False
+            self.odometry_wait_started = 0.0
+            self.message = "里程计已恢复，继续导航"
+            self.stop()
+        return reason
 
     def on_chassis(self, msg):
         age = (self.get_clock().now() - Time.from_msg(msg.header.stamp)).nanoseconds / 1e9
@@ -278,8 +443,12 @@ class NavigationBridge(Node):
             return
         stamp = msg.stamp.sec * 1_000_000_000 + msg.stamp.nanosec
         detail = planning_failure(msg.msg)
+        if detail and not getattr(self, "use_lidar", True) and "detected collision ahead" in msg.msg.lower():
+            detail = "控制器检测到车身与地图障碍的碰撞风险，已停止：请检查禁行区边界及定位偏差"
         with self.state_lock:
             if detail and self.operation_started_ns and stamp >= self.operation_started_ns:
+                if "detected collision ahead" in msg.msg.lower() and getattr(self, "collision_recorder", None):
+                    self.collision_recorder.record(stamp)
                 self.failure_detail = detail
                 if not self.busy and self.navigation in ("规划失败", "任务失败") and not self.stop_reason:
                     self.message = detail
@@ -333,9 +502,15 @@ class NavigationBridge(Node):
     def on_cmd(self, msg):
         self.cmd, self.cmd_seen = msg, time.monotonic()
 
+    def publish_speed_limit(self):
+        if self.speed_gear_kmh is not None:
+            self.speed_limit_pub.publish(SpeedLimit(speed_limit=SPEED_GEARS_MPS[self.speed_gear_kmh]))
+
     def on_path(self, msg):
         if msg.header.frame_id == "map":
             with self.state_lock:
+                if getattr(self, "heading_search", None) is not None:
+                    return
                 stamp = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
                 if stamp < self.operation_started_ns:
                     return
@@ -417,6 +592,8 @@ class NavigationBridge(Node):
             self.connection.update(
                 planner_ready=self.plan_client.server_is_ready(),
                 navigator_ready=self.goal_client.server_is_ready(),
+                planner_map_ready=(self.active_model is not None
+                                   and self.planner_sync.ready_for(self.active_model.resolution)),
             )
         try:
             transform = self.tf.lookup_transform("map", "base_link", Time())
@@ -453,7 +630,7 @@ class NavigationBridge(Node):
             name, payload, future = entry
             edit_acquired = False
             document_acquired = False
-            if name != "cancel":
+            if name not in ("cancel", "speed"):
                 edit_acquired = self.app.edit_lock.acquire(blocking=False)
                 if edit_acquired:
                     document_acquired = self.app.lock.acquire(blocking=False)
@@ -476,17 +653,24 @@ class NavigationBridge(Node):
                     self.app.lock.release()
                 if edit_acquired:
                     self.app.edit_lock.release()
+        if getattr(self, "heading_search", None) is not None:
+            self.advance_heading_search()
         with self.state_lock:
+            navigating = self.busy and self.navigation in ("导航中", "正在接受目标")
             fault = (NavigationBridge.chassis_block_reason(self)
-                     or NavigationBridge.odometry_block_reason(self)
+                     or (NavigationBridge.odometry_navigation_fault(self) if navigating
+                         else NavigationBridge.odometry_block_reason(self))
                      or NavigationBridge.tracking_block_reason(self))
-            if self.busy and self.navigation in ("导航中", "正在接受目标") and fault:
+            if navigating and fault:
                 self.stop_reason = fault
+                self.odometry_waiting = False
+                self.odometry_wait_started = 0.0
+                self.odometry_recovery_samples = 0
                 self.navigation, self.message = "取消中", fault
                 if self.action_handle:
                     self.action_handle.cancel_goal_async()
                 self.stop()
-            reason = self.velocity_block_reason()
+            command, reason = NavigationBridge.guarded_velocity(self)
             if self.busy and self.navigation in ("导航中", "正在接受目标") and reason.startswith("预测轨迹偏离"):
                 self.stop_reason = reason
                 self.navigation, self.message = "取消中", reason
@@ -495,56 +679,100 @@ class NavigationBridge(Node):
                 self.stop()
             self.guard_reason = reason or "通行"
             # Only this gate writes to the chassis velocity topic in this launch.
-            self.vel_pub.publish(Twist() if reason else self.cmd)
+            self.vel_pub.publish(Twist() if reason else command)
 
-    def velocity_block_reason(self):
+    def limit_command(self):
+        # Keep the steering curvature when an old controller command arrives
+        # after a downshift, or a turn would exceed the angular limit.
+        command = self.cmd
+        gear = getattr(self, "speed_gear_kmh", None)
+        v, w = command.linear.x, command.angular.z
+        if not gear or not (0.0 < v <= MAX_GEAR_SPEED_MPS) or not math.isfinite(w):
+            return command
+        scale = min(1.0, SPEED_GEARS_MPS[gear] / v, ANGULAR_LIMIT / max(ANGULAR_LIMIT, abs(w)))
+        if self.pose and self.tracking_goal:
+            distance = math.hypot(self.pose["x"] - self.tracking_goal[0], self.pose["y"] - self.tracking_goal[1])
+            scale = min(scale, distance / (PREDICTION_HORIZON * v))
+        return NavigationBridge.scale_command(command, scale) if scale < 1.0 else command
+
+    @staticmethod
+    def scale_command(command, scale):
+        scaled = copy.deepcopy(command)
+        scaled.linear.x *= scale
+        scaled.angular.z = max(-ANGULAR_LIMIT, min(ANGULAR_LIMIT, command.angular.z * scale))
+        return scaled
+
+    def guarded_velocity(self):
+        command = NavigationBridge.limit_command(self)
+        reason, on_path_fraction = NavigationBridge.check_velocity(self, command)
+        if command.linear.x > DEFAULT_LINEAR_LIMIT and on_path_fraction > 0.0:
+            # Low speeds let the controller finish correcting its heading near
+            # a bend. Keep the same curvature and verify the shorter projection.
+            slower = NavigationBridge.scale_command(command, on_path_fraction)
+            if not NavigationBridge.check_velocity(self, slower)[0]:
+                return slower, ""
+        return command, reason
+
+    def velocity_block_reason(self, command=None):
+        if command is None:
+            return NavigationBridge.guarded_velocity(self)[1]
+        return NavigationBridge.check_velocity(self, command)[0]
+
+    def check_velocity(self, command):
         now = time.monotonic()
         if not self.motion:
-            return "运动未启用"
+            return "运动未启用", 0.0
         chassis_reason = NavigationBridge.chassis_block_reason(self)
         if chassis_reason:
-            return chassis_reason
+            return chassis_reason, 0.0
         odometry_reason = NavigationBridge.odometry_block_reason(self)
         if odometry_reason:
-            return odometry_reason
+            return odometry_reason, 0.0
         if self.active_grid is None:
-            return "地图未应用"
+            return "地图未应用", 0.0
         if not self.busy or self.navigation not in ("导航中", "正在接受目标"):
-            return "未执行导航"
+            return "未执行导航", 0.0
         if not self.pose:
-            return "定位不可用或过期"
+            return "定位不可用或过期", 0.0
         if not self.tracking_path:
-            return "等待本次导航路径"
+            return "等待本次导航路径", 0.0
         tracking_reason = NavigationBridge.tracking_block_reason(self)
         if tracking_reason:
-            return tracking_reason
-        if now - self.scan_seen > 0.6:
-            return "激光雷达数据过期"
+            return tracking_reason, 0.0
+        if getattr(self, "use_lidar", True) and now - self.scan_seen > 0.6:
+            return "激光雷达数据过期", 0.0
         if now - self.cmd_seen > 0.3:
-            return "速度指令过期"
-        values = [self.cmd.linear.x, self.cmd.linear.y, self.cmd.angular.z]
+            return "速度指令过期", 0.0
+        values = [command.linear.x, command.linear.y, command.angular.z]
         if not all(math.isfinite(v) for v in values):
-            return "速度指令无效"
+            return "速度指令无效", 0.0
         v, _, w = values
-        if abs(v) > 0.7 or abs(w) > 0.8 or abs(self.cmd.linear.y) > 0.001:
-            return "速度指令超过上限"
+        gear = getattr(self, "speed_gear_kmh", None)
+        forward_limit = SPEED_GEARS_MPS[gear] + 1e-9 if gear else DEFAULT_LINEAR_LIMIT
+        if (not -DEFAULT_LINEAR_LIMIT <= v <= forward_limit or abs(w) > ANGULAR_LIMIT
+                or abs(command.linear.y) > 0.001):
+            return "速度指令超过上限", 0.0
         x, y, theta = self.pose["x"], self.pose["y"], self.pose["yaw"]
         # Circumscribed robot radius (0.52 m) + 0.13 m margin is baked into the map.
         # The laser gate uses that same conservative disk along a 1.5 s trajectory.
-        for _ in range(31):
+        steps = 30
+        if abs(v) > DEFAULT_LINEAR_LIMIT:
+            steps = max(steps, math.ceil(abs(v) * PREDICTION_HORIZON / (self.active_model.resolution / 2)))
+        dt = PREDICTION_HORIZON / steps
+        for step in range(steps + 1):
             if not self.active_model.is_free(self.active_grid, x, y):
-                return "预测轨迹超出可行驶区域"
-            if any(
+                return "预测轨迹超出可行驶区域", 0.0
+            if getattr(self, "use_lidar", True) and any(
                 (x - px) ** 2 + (y - py) ** 2 <= 0.65 ** 2
                 for px, py in self.scan_points
             ):
-                return "预测轨迹遇到激光障碍"
-            if distance_to_path(x, y, self.tracking_path) > .75:
-                return "预测轨迹偏离本次规划路径（超过 0.75 米），已停止"
-            x += v * math.cos(theta) * 0.05
-            y += v * math.sin(theta) * 0.05
-            theta += w * 0.05
-        return ""
+                return "预测轨迹遇到激光障碍", 0.0
+            if distance_to_path(x, y, self.tracking_path, within=.75) > .75:
+                return "预测轨迹偏离本次规划路径（超过 0.75 米），已停止", max(0, step - 1) / steps
+            x += v * math.cos(theta) * dt
+            y += v * math.sin(theta) * dt
+            theta += w * dt
+        return "", 0.0
 
     def tracking_block_reason(self):
         if self.tracking_path and self.pose:
@@ -553,14 +781,68 @@ class NavigationBridge(Node):
                 return f"车辆偏离本次规划路径 {error:.2f} 米，已停止；请核对定位和转向"
         return ""
 
-    def dispatch(self, name, payload):
+    def advance_heading_search(self):
+        # Preserve the same lock order and recheck the map and motion guards
+        # before submitting the resolved poses to the navigator.
+        if not self.app.edit_lock.acquire(blocking=False):
+            return
+        try:
+            if not self.app.lock.acquire(blocking=False):
+                return
+            try:
+                with self.state_lock:
+                    search, name, route = self.heading_search
+                    try:
+                        result = search.advance()
+                        if result is None:
+                            return
+                        targets, path = result
+                        if self.app.model is not self.source_model or self.app.project != self.applied_project:
+                            raise ValueError("保存的地图已变化，请重新应用后规划")
+                        self.heading_search, self.busy = None, False
+                        if name == "plan":
+                            self.operation_started_ns = self.get_clock().now().nanoseconds
+                            self.navigation, self.message = "规划完成", "已自动确定途径点和终点的行驶朝向"
+                            self.path = path
+                        else:
+                            self.dispatch(name, {"poses": targets} if route else targets[0], automatic=True)
+                        self.planned_targets = targets
+                    except Exception as exc:
+                        search.cancel()
+                        self.heading_search, self.busy = None, False
+                        self.navigation, self.message = "规划失败", str(exc)
+            finally:
+                self.app.lock.release()
+        finally:
+            self.app.edit_lock.release()
+
+    def dispatch(self, name, payload, *, automatic=False):
         if name == "cancel":
+            search = getattr(self, "heading_search", None)
+            if search is not None:
+                search[0].cancel()
+                self.heading_search, self.busy = None, False
+                self.operation_started_ns = self.get_clock().now().nanoseconds
             if self.action_handle:
                 self.action_handle.cancel_goal_async()
             self.navigation = "取消中" if self.busy else "已取消"
+            self.odometry_waiting = False
+            self.odometry_wait_started = 0.0
+            self.odometry_recovery_samples = 0
             self.stop()
             return {"ok": True}
+        if name == "speed":
+            gear = payload.get("kmh") if isinstance(payload, dict) else None
+            if type(gear) is not int or gear not in SPEED_GEARS_MPS:
+                raise ValueError("请选择 2、4 或 6 km/h 档位")
+            if not self.speed_limit_pub.get_subscription_count():
+                raise ValueError("Nav2 速度接口尚未就绪，请稍候重试")
+            self.speed_gear_kmh = gear
+            self.publish_speed_limit()
+            return {"speed_gear_kmh": gear}
         if name == "obstacles":
+            if not getattr(self, "use_lidar", True):
+                raise ValueError("当前为无雷达模式，请在地图中标注障碍或禁行区")
             if not self.demo:
                 raise ValueError("只可在仿真模式中添加模拟障碍")
             points = [[finite(v) for v in p] for p in payload.get("points", [])]
@@ -572,6 +854,11 @@ class NavigationBridge(Node):
             return {"ok": True}
         if self.busy:
             raise ValueError("已有规划或导航任务，请先取消")
+        resume_index = None
+        if name == "resume":
+            resume_index, targets = self.mission.prepare_resume(payload, self.app.map_id, self.app.project)
+            name = "route" if len(targets) > 1 else "goal"
+            payload = {"poses": targets} if name == "route" else targets[0]
         if name == "apply":
             self.stop()
             source_model, project = self.app.model, copy.deepcopy(self.app.project)
@@ -587,7 +874,7 @@ class NavigationBridge(Node):
                 raise ValueError("导航所需安全边距至少 0.65 米（包含车身半径）")
             model, grid = source_model.navigation_map(project)
             if not (grid == 0).any():
-                raise ValueError("没有可行驶栅格，请先绘制可行驶区")
+                raise ValueError("没有可行驶栅格，请检查可行驶区域、禁行区和安全边距")
             self.active_model, self.active_grid = model, grid
             self.source_model = source_model
             self.applied_project = project
@@ -603,6 +890,14 @@ class NavigationBridge(Node):
             msg.data = array("b", grid.tobytes())
             self.map_pub.publish(msg)
             self.mask_pub.publish(msg)
+            physical_model, physical_grid = source_model.footprint_map(project)
+            physical_msg = copy.deepcopy(msg)
+            physical_msg.info.width = physical_model.width
+            physical_msg.info.height = physical_model.height
+            physical_msg.info.resolution = physical_model.resolution
+            physical_msg.info.origin.position.x, physical_msg.info.origin.position.y = physical_model.origin[:2]
+            physical_msg.data = array("b", physical_grid.tobytes())
+            self.footprint_map_pub.publish(physical_msg)
             info = CostmapFilterInfo()
             info.header = msg.header
             info.type, info.base, info.multiplier = 0, 0.0, 1.0
@@ -625,11 +920,14 @@ class NavigationBridge(Node):
             self.applied_at = time.monotonic()
             self.navigation, self.message = "地图已应用", "可设置终点并请求 Nav2 规划"
             self.path = []
+            self.planned_targets = []
             return {"ok": True, "free_cells": int((grid == 0).sum())}
         if name not in ("plan", "goal", "route"):
             raise ValueError("未知操作")
         if self.active_grid is None or time.monotonic() - self.applied_at < 1.0:
             raise ValueError("请先应用地图并等待代价地图接收")
+        if not self.planner_sync.ready_for(self.active_model.resolution):
+            raise ValueError("正在同步规划器与地图分辨率，请稍候再规划")
         if (
             self.app.model is not self.source_model
             or self.app.project != self.applied_project
@@ -641,24 +939,20 @@ class NavigationBridge(Node):
             self.active_grid, self.pose["x"], self.pose["y"]
         ):
             raise ValueError("小车当前位置不在安全可行驶区内")
-        targets = payload["poses"] if name == "route" else [payload]
-        if not 1 <= len(targets) <= 200:
+        targets = (
+            payload["poses"]
+            if name == "route" or (name == "plan" and "poses" in payload)
+            else [payload]
+        )
+        if not isinstance(targets, list) or not 1 <= len(targets) <= 200:
             raise ValueError("需要 1–200 个目标")
-        poses = []
+        auto_heading = payload.get("auto_heading") is True
+        coordinates = []
         for target in targets:
-            x, y, yaw = (finite(target[k]) for k in ("x", "y", "yaw"))
+            x, y = (finite(target[k]) for k in ("x", "y"))
             if not self.active_model.is_free(self.active_grid, x, y):
-                raise ValueError("终点或航点位于禁行区、未知区或边界安全带内")
-            pose = PoseStamped()
-            pose.header.frame_id, pose.header.stamp = (
-                "map",
-                self.get_clock().now().to_msg(),
-            )
-            pose.pose.position.x, pose.pose.position.y = x, y
-            pose.pose.orientation.z, pose.pose.orientation.w = math.sin(
-                yaw / 2
-            ), math.cos(yaw / 2)
-            poses.append(pose)
+                raise ValueError("终点或途径点超出可行驶区域，或位于禁行区、未知区或边界安全带内")
+            coordinates.append(dict(x=x, y=y) if auto_heading else dict(x=x, y=y, yaw=finite(target["yaw"])))
         if name != "plan" and not self.motion:
             raise ValueError("启动参数未启用运动；可先使用仅规划")
         if name != "plan":
@@ -668,36 +962,75 @@ class NavigationBridge(Node):
             odometry_reason = self.odometry_block_reason()
             if odometry_reason:
                 raise ValueError(odometry_reason)
-        if name != "plan" and time.monotonic() - self.scan_seen > 0.6:
+        if name != "plan" and getattr(self, "use_lidar", True) and time.monotonic() - self.scan_seen > 0.6:
             raise ValueError("激光雷达数据不可用或过期")
+        if auto_heading:
+            if not self.plan_client.server_is_ready():
+                raise ValueError("Nav2 规划器尚未就绪，请检查生命周期及代价地图")
+            search = HeadingSearch(self.plan_client, self.get_clock, self.pose, coordinates)
+            self.heading_search = (search, name, "poses" in payload)
+            self.operation += 1
+            self.operation_started_ns = self.get_clock().now().nanoseconds
+            self.busy, self.navigation, self.message = True, "规划中", "正在自动选择可行驶朝向"
+            self.path = self.tracking_path = self.planned_targets = []
+            self.tracking_goal = None
+            return {"ok": True, "operation": self.operation}
+        stamp = self.get_clock().now().to_msg()
+        poses = [stamped_pose(target, stamp) for target in coordinates]
         if name == "plan":
-            client, goal = self.plan_client, ComputePathToPose.Goal()
-            goal.goal, goal.planner_id = poses[0], "GridBased"
+            if "poses" in payload:
+                client, goal = self.plan_route_client, ComputePathThroughPoses.Goal()
+                goal.goals = poses
+            else:
+                client, goal = self.plan_client, ComputePathToPose.Goal()
+                goal.goal = poses[0]
+            goal.planner_id = "GridBased"
             # Ask Nav2 to resolve the live robot pose when planning starts.
             goal.use_start = False
         elif name == "goal":
             client, goal = self.goal_client, NavigateToPose.Goal()
             goal.pose = poses[0]
+            goal.behavior_tree = getattr(self, "behavior_trees", {}).get(name, "")
         else:
             client, goal = self.route_client, NavigateThroughPoses.Goal()
             goal.poses = poses
+            goal.behavior_tree = getattr(self, "behavior_trees", {}).get(name, "")
         if not client.server_is_ready():
             raise ValueError("Nav2 action 尚未就绪，请检查生命周期及代价地图")
-        self.operation += 1
+        if not automatic:
+            self.operation += 1
         self.operation_started_ns = self.get_clock().now().nanoseconds
         self.failure_detail = ""
         self.stop_reason = ""
+        self.odometry_waiting = False
+        self.odometry_wait_started = 0.0
+        self.odometry_recovery_samples = 0
         self.tracking_path = []
         self.tracking_goal = None if name == "plan" else [poses[-1].pose.position.x, poses[-1].pose.position.y]
         self.path = []
-        future = client.send_goal_async(goal)
+        self.planned_targets = []
         operation = self.operation
+        journal = getattr(self, "mission", None)
+        if name != "plan" and journal:
+            if resume_index is None:
+                journal.start(targets, self.app.map_id, self.app.project, automatic=automatic)
+            else:
+                journal.resumed(resume_index)
+        if name == "route" and journal:
+            future = client.send_goal_async(goal, feedback_callback=lambda msg: self.on_route_feedback(msg, operation))
+        else:
+            future = client.send_goal_async(goal)
         self.busy = True
         self.navigation = "规划中" if name == "plan" else "正在接受目标"
         self.message = ""
         self.cmd_seen = 0.0
         future.add_done_callback(lambda f: self.accepted(f, operation, name))
         return {"ok": True, "operation": operation}
+
+    def on_route_feedback(self, message, operation):
+        with self.state_lock:
+            if operation == self.operation:
+                self.mission.feedback(message.feedback.number_of_poses_remaining)
 
     def accepted(self, future, operation, kind):
         with self.state_lock:
@@ -720,6 +1053,8 @@ class NavigationBridge(Node):
             except Exception as exc:
                 self.busy = False
                 self.navigation, self.message = "任务失败", str(exc)
+                if kind != "plan" and getattr(self, "mission", None):
+                    self.mission.finish(False, self.message)
                 self.stop()
 
     def finished(self, future, operation, kind):
@@ -741,6 +1076,8 @@ class NavigationBridge(Node):
                     if response.status == 4 and not self.path:
                         self.navigation = "规划失败"
                 self.message = f"Nav2 状态码 {response.status}"
+                if kind != "plan" and response.status == 5:
+                    self.message = "任务已停止，进度已保留；点击开始导航可选择继续"
                 if kind == "plan" and response.status == 6:
                     self.navigation = "规划失败"
                     self.message = self.failure_detail or "Nav2 中止规划：检查起点障碍、通道和终点朝向"
@@ -751,4 +1088,12 @@ class NavigationBridge(Node):
             except Exception as exc:
                 self.navigation, self.message = "任务失败", str(exc)
             self.busy, self.action_handle = False, None
+            if kind != "plan" and getattr(self, "mission", None):
+                self.mission.finish(self.navigation == "已到达", self.message)
+                if self.navigation == "任务失败" and "碰撞风险" in self.message:
+                    self.navigation = "已暂停"
+                    self.message += "；任务进度已保留，点击开始导航可继续"
+            self.odometry_waiting = False
+            self.odometry_wait_started = 0.0
+            self.odometry_recovery_samples = 0
             self.stop()

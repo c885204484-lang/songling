@@ -19,7 +19,6 @@
       <div class="header-actions">
         <span id="connection" class="badge">连接中</span
         ><button id="ros-open">连接 ROS</button
-        ><button id="registration-open">地图配准</button
         ><button id="import-open">导入地图</button
         ><button id="export">导出地图包 ↓</button
         ><button id="save" class="primary">保存当前地图</button>
@@ -31,7 +30,7 @@
           <span>01 / 地图标注</span><span id="dirty" class="muted">已保存</span>
         </div>
         <p class="hint" id="annotation-hint">
-          绘制可行驶范围，再添加禁行区域。区域坐标以 map 米制坐标保存。
+          仅可行驶区域内允许通行，禁行区优先。区域坐标以 map 米制坐标保存。
         </p>
         <div class="tools" role="group" aria-label="标注工具">
           <button data-tool="pan" class="selected">
@@ -39,15 +38,15 @@
           </button>
           <button data-tool="drivable">
             <i class="green">▱</i
-            ><span>可行驶区域<small>多边形范围内允许通行</small></span>
+            ><span>可行驶区域编辑<small>多边形范围内允许通行</small></span>
           </button>
           <button data-tool="forbidden">
             <i class="red">▱</i
-            ><span>禁行区域<small>优先覆盖可行驶区域</small></span>
+            ><span>禁行区编辑<small>优先覆盖可行驶区域</small></span>
           </button>
           <button data-tool="waypoint">
             <i class="blue">⚑</i
-            ><span>添加航点<small>点击地图设置位置</small></span>
+            ><span>添加途径点<small>点击地图设置位置</small></span>
           </button>
           <button data-tool="goal">
             <i class="amber">◎</i
@@ -81,9 +80,9 @@
         <p class="hint">
           导航至少 0.65 米，包含车身半径。原地图的障碍物和未知区域始终禁行。
         </p>
-        <button id="mask" class="full">保存并预览导航掩码</button>
+        <button id="mask" class="full">保存并预览通行范围</button>
         <label class="check"
-          ><input id="show-mask" type="checkbox" />显示栅格禁行掩码</label
+          ><input id="show-mask" type="checkbox" />高亮禁行范围</label
         >
         <div class="section-title">
           <span>标注图层</span><span id="count">0</span>
@@ -132,97 +131,6 @@
         </div>
       </section>
       <aside class="right">
-        <section id="registration-panel" hidden aria-label="地图配准">
-          <div class="section-title">
-            <b>地图配准</b
-            ><button id="registration-close" class="text-button">
-              返回导航
-            </button>
-          </div>
-          <fieldset id="registration-fields">
-            <button id="registration-geodetic" class="primary full">
-              经纬度自动对齐（无需采点）
-            </button>
-            <p class="hint">
-              高德底图自动转换至当前 GPS 导航坐标。保留标注及原快照，保存后重新应用地图。
-              卫星影像和 GPS 仍有实测误差，不能用投影误差代替定位精度。
-            </p>
-            <div id="registration-gps" class="pose-readout"></div>
-            <p class="hint">
-              沿现场地面标记采集至少 3 个分散且不共线的配准点，再另采至少 1
-              个检查点。每个点统一以车体 base_link
-              对应的地面位置为准，停稳后采集。
-            </p>
-            <button id="registration-pick" class="full">
-              ① 在地图选择对应位置
-            </button>
-            <div id="registration-selected" class="pose-readout">
-              尚未选择地图位置
-            </div>
-            <button id="registration-capture" class="full">
-              ② 读取当前小车位置并添加点
-            </button>
-            <details>
-              <summary>手工输入已记录的 ROS map 坐标</summary>
-              <div class="target-grid">
-                <label
-                  >X / m<input id="registration-x" type="number" step="any"
-                /></label>
-                <label
-                  >Y / m<input id="registration-y" type="number" step="any"
-                /></label>
-              </div>
-              <button id="registration-manual" class="full">
-                使用输入坐标添加点
-              </button>
-            </details>
-            <p class="hint">
-              新点默认参与配准；列表中可改为独立检查点。检查点只验证误差，不参与拟合。
-            </p>
-            <div id="registration-points" class="list"></div>
-            <label class="check"
-              ><input
-                id="registration-scale"
-                type="checkbox"
-              />同时校正比例尺</label
-            >
-            <label class="field"
-              >各点允许误差 / 米<input
-                id="registration-tolerance"
-                type="number"
-                min="0.05"
-                max="5"
-                step="0.05"
-                value="0.75"
-            /></label>
-            <button id="registration-preview" class="full">
-              ③ 计算配准与检查误差
-            </button>
-            <div
-              id="registration-report"
-              class="registration-report"
-              role="status"
-            >
-              尚未计算；不会改变当前地图。
-            </div>
-            <label class="check"
-              ><input id="registration-fixed" type="checkbox" />已固定定位 map
-              的原点及朝向，重启后保持一致</label
-            >
-            <p class="hint">
-              GPS 定位需先设置固定
-              datum；此页面只配准地图，不修改定位配置。允许误差需小于现场道路预留余量。仿真采集的结果仅供仿真使用。
-            </p>
-            <button id="registration-save" class="primary full" disabled>
-              ④ 另存配准地图
-            </button>
-            <button id="registration-clear" class="full">清空本次对应点</button>
-            <p class="hint">
-              保存会同步转换可行驶区、禁行区和航点；原快照保留。保存后需重新应用地图到
-              Nav2。采点草稿仅保存在当前浏览器。
-            </p>
-          </fieldset>
-        </section>
         <div id="navigation-panel">
           <div class="section-title">
             <span>02 / 导航任务</span><span class="live-dot"></span>
@@ -270,13 +178,13 @@
           </div>
           <button id="cancel" class="danger full">取消导航 / 停止</button>
           <div class="section-title">
-            <span>航点任务</span><span id="waypoint-count">0 个</span>
+            <span>途径点任务</span><span id="waypoint-count">0 个</span>
           </div>
           <div id="waypoints" class="list"></div>
-          <button id="route" class="full">按顺序导航所有航点</button>
+          <button id="route" class="full">按顺序导航所有途径点</button>
           <button id="clear-obstacles" class="full">清除仿真障碍</button>
           <p class="hint">
-            区域编辑保存后，需重新应用才会更新导航地图。任务执行期间禁止切换地图。
+            点击“应用已保存地图到 Nav2”保存并启用区域修改。任务执行期间禁止切换地图。
           </p>
         </div>
       </aside>

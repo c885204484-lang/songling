@@ -1,7 +1,7 @@
 
 <!--
-  This Behavior Tree replans the global path periodically at 1 Hz through an array of poses continuously
-   and it also has recovery actions specific to planning / control as well as general system issues.
+  Check the remaining route at 1 Hz. Keep a collision-free path until the goals
+  change or an obstacle invalidates it, including during the final approach.
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -11,14 +11,29 @@
           <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
             <ReactiveSequence>
               <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
-              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+              <Fallback name="ReuseValidRoute">
+                <ReactiveSequence name="CheckExistingRoute">
+                  <Inverter>
+                    <GlobalUpdatedGoal/>
+                  </Inverter>
+                  <IsPathValid path="{path}"/>
+                </ReactiveSequence>
+                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+              </Fallback>
             </ReactiveSequence>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath"/>
-          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          <Sequence name="RefreshRouteAfterControllerFailure">
+            <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <Wait wait_duration="1"/>
+            <!-- RPP prunes its private path as the vehicle advances. Retrying
+                 the original long path resets that progress and the bounded
+                 nearest-pose search may find no points in the local window. -->
+            <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+          </Sequence>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">

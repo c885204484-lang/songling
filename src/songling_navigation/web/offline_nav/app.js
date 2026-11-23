@@ -1,5 +1,3 @@
-import { RegistrationPanel } from "/registration.js";
-
 const $ = (id) => document.getElementById(id);
 const canvas = $("map"),
   ctx = canvas.getContext("2d");
@@ -8,13 +6,11 @@ const titles = {
   pan: "浏览地图",
   drivable: "绘制可行驶区域",
   forbidden: "绘制禁行区域",
-  waypoint: "添加航点",
+  waypoint: "添加途径点",
   goal: "设置导航终点",
   obstacle: "添加仿真激光障碍",
-  registration: "选择地图配准对应位置",
 };
-let registration,
-  revision = null;
+let revision = null;
 let project,
   runtime = {},
   baseImage,
@@ -32,6 +28,7 @@ let goal = { x: 0, y: 0, yaw: 0 },
   goalSet = false,
   networkBusy = false;
 const clone = (value) => JSON.parse(JSON.stringify(value));
+const waypointLabel = (name) => name.replace(/^航点(?= \d+$|$)/, "途径点");
 function notice(message, error = false) {
   $("notice").textContent = message;
   $("notice").classList.toggle("error", error);
@@ -215,7 +212,7 @@ function draw() {
     );
   }
   project.waypoints.forEach((wp, i) =>
-    marker(wp.x, wp.y, "#538bdf", `${i + 1} ${wp.name}`, wp.yaw),
+    marker(wp.x, wp.y, "#538bdf", `${i + 1} ${waypointLabel(wp.name)}`, wp.yaw),
   );
   if (goalSet) marker(goal.x, goal.y, "#d58a23", "终点", goal.yaw);
   if (runtime.pose)
@@ -227,7 +224,6 @@ function draw() {
       runtime.pose.yaw,
     );
   for (const [x, y] of obstacles) marker(x, y, "#e45a60", "障碍");
-  registration?.overlay(marker, polygon);
   $("zoom").textContent = Math.round(view.scale * 100) + "%";
   $("scale-label").textContent =
     `1 px = ${project.map.resolution.toFixed(3)} m`;
@@ -239,13 +235,12 @@ function checkpoint() {
 function changed() {
   dirty = true;
   maskImage = null;
+  $("show-mask").checked = false;
   $("dirty").textContent = "未保存";
-  registration?.invalidate();
   renderLists();
   draw();
 }
 function setTool(value) {
-  if (registration?.active && value !== "registration") registration.close();
   if (draft.length) notice("未完成的多边形已放弃");
   draft = [];
   tool = value;
@@ -284,7 +279,7 @@ function renderLists() {
     const row = document.createElement("div");
     row.className = "list-item";
     const name = document.createElement("span");
-    name.textContent = `${index + 1}. ${wp.name}`;
+    name.textContent = `${index + 1}. ${waypointLabel(wp.name)}`;
     const select = document.createElement("button");
     select.textContent = "选";
     select.title = "设为终点";
@@ -298,7 +293,7 @@ function renderLists() {
     edit.textContent = "改";
     edit.title = "修改名称和航向";
     edit.onclick = () => {
-      const text = prompt("航点名称", wp.name);
+      const text = prompt("途径点名称", waypointLabel(wp.name));
       if (text === null) return;
       const deg = prompt("航向（度）", String((wp.yaw * 180) / Math.PI));
       if (deg === null) return;
@@ -324,7 +319,7 @@ function renderLists() {
     };
     const del = document.createElement("button");
     del.textContent = "×";
-    del.title = "删除航点";
+    del.title = "删除途径点";
     del.onclick = () => {
       checkpoint();
       project.waypoints.splice(index, 1);
@@ -342,7 +337,7 @@ function finishPolygon() {
   project[tool].push(draft);
   draft = [];
   changed();
-  notice("区域已添加，请保存并预览掩码");
+  notice("区域已添加，请保存并应用地图");
 }
 canvas.addEventListener("pointerdown", (e) => {
   if (!project) return;
@@ -383,16 +378,14 @@ canvas.addEventListener("pointerup", (e) => {
   const p = eventPixel(e);
   if (!inside(p)) return notice("请在地图范围内选点", true);
   const [x, y] = pixelToWorld(p);
-  if (tool === "registration") {
-    registration.select([x, y]);
-  } else if (["drivable", "forbidden"].includes(tool)) {
+  if (["drivable", "forbidden"].includes(tool)) {
     draft.push([x, y]);
     draw();
   } else if (tool === "waypoint") {
     checkpoint();
     project.waypoints.push({
       id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
-      name: `航点 ${project.waypoints.length + 1}`,
+      name: `途径点 ${project.waypoints.length + 1}`,
       x,
       y,
       yaw: goal.yaw,
@@ -485,11 +478,13 @@ for (const id of ["goal-x", "goal-y", "goal-yaw"])
   };
 async function save() {
   if (draft.length) throw new Error("请先完成或放弃当前多边形");
+  const submitted = JSON.stringify(project);
   const result = await api("/api/project", project);
   revision = result.revision;
-  dirty = false;
-  $("dirty").textContent = "已保存";
+  dirty = JSON.stringify(project) !== submitted;
+  $("dirty").textContent = dirty ? "未保存" : "已保存";
   renderStorage(result.storage);
+  if (dirty || draft.length) throw new Error("保存期间地图又有修改，请完成编辑后重新保存");
   notice(`地图已保存到 ${result.storage.snapshot_path}`);
 }
 $("save").onclick = action(save);
@@ -502,7 +497,7 @@ $("mask").onclick = action(async () => {
 $("show-mask").onchange = () => {
   if (!maskImage && $("show-mask").checked) {
     $("show-mask").checked = false;
-    notice("请先点击“保存并预览导航掩码”");
+    notice("请先点击“保存并预览通行范围”");
   }
   draw();
 };
@@ -516,7 +511,7 @@ $("export").onclick = action(async () => {
   link.download = "songling-offline-map.zip";
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
-  notice("已导出原始地图、标注项目和导航掩码");
+  notice("已导出原始地图、标注项目和导航地图");
 });
 $("apply").onclick = action(async () => {
   await save();
@@ -529,6 +524,7 @@ for (const [id, path, payload] of [
   ["route", "route", () => ({ poses: project.waypoints })],
 ])
   $(id).onclick = action(async () => {
+    if (draft.length) throw new Error("请先完成或放弃当前多边形");
     if (dirty) throw new Error("地图有未保存修改，请先保存并应用");
     if (id !== "route" && !goalSet)
       throw new Error("请先在地图选择终点，或输入终点坐标");
@@ -613,6 +609,7 @@ async function loadState(state) {
   history = [];
   draft = [];
   maskImage = null;
+  $("show-mask").checked = false;
   dirty = false;
   obstacles = [];
   goal = { x: 0, y: 0, yaw: 0 };
@@ -631,25 +628,17 @@ async function loadState(state) {
     : "MAP / 米制坐标";
   $("site-banner").hidden = !project.map.site;
   $("annotation-hint").textContent = project.map.has_basemap
-    ? "请沿道路绘制可行驶区，建筑、水域等请设为禁行区。卫星图仅作标注底图，不会自动识别障碍。"
-    : "绘制可行驶范围，再添加禁行区域。区域坐标以 map 米制坐标保存。";
+    ? "请沿道路绘制可行驶区域，圈外及禁行区禁止通行。卫星底图仅供标注参考。"
+    : "仅可行驶区域内允许通行，禁行区优先。区域坐标以 map 米制坐标保存。";
   $("site-banner").textContent = project.map.site
     ? `${project.map.site.name} · ${project.map.site.address || ""} · ${project.map.site.basemap_type === "satellite" ? "真实卫星底图" : "真实地图"} · ${project.map.site.attribution || ""}`
     : "";
   if (project.map.georeference?.navigation_aligned === false) {
     $("map-info").textContent += "\n园区局部坐标 · 实车导航前需与定位配准";
   }
-  const alignment = project.map.georeference?.registration;
-  if (alignment) {
-    $("map-info").textContent +=
-      alignment.method === "geodetic_fromll"
-        ? "\n经纬度自动对齐 · GPS 与影像实测精度待核对"
-        : `\n${alignment.simulated ? "已配准 · 仅供仿真" : "已配准到 ROS map"} · 检查最大误差 ${Number.isFinite(alignment.check_max_m) ? alignment.check_max_m.toFixed(3) + " m" : "未记录"}`;
-  }
   resize();
   fit();
   renderRuntime();
-  registration?.reset(project, state.storage, state.map_id);
 }
 function renderStorage(storage) {
   if (!storage) return;
@@ -661,13 +650,13 @@ function renderRuntime() {
     connection = runtime.connection || {};
   $("connection").textContent = ros
     ? runtime.pose
-      ? "ROS 2 · 定位已接收"
+      ? (connection.lidar_enabled === false ? "ROS 2 · 无雷达 · 定位已接收" : "ROS 2 · 定位已接收")
       : "ROS 2 · 等待定位"
     : "本地离线模式";
   $("nav-status").textContent = runtime.navigation || "服务未连接";
   $("nav-message").textContent = runtime.message || "";
   $("sensor-status").textContent = ros
-    ? `底盘 ${runtime.chassis?.message || "待检查"} · ${runtime.odometry?.message || "里程计待检查"} · 激光 ${runtime.scan_age_s === null ? "未接收" : runtime.scan_age_s + " s"} · ${runtime.guard || "—"} · ${runtime.motion_enabled ? "运动已启用" : "仅规划"} · ${runtime.applied_revision ? "地图已应用" : "地图未应用"}`
+    ? `底盘 ${runtime.chassis?.message || "待检查"} · ${runtime.odometry?.message || "里程计待检查"} · ${runtime.connection?.lidar_enabled === false ? "无雷达模式 · 按地图行驶" : "激光 " + (runtime.scan_age_s === null ? "未接收" : runtime.scan_age_s + " s")} · ${runtime.guard || "—"} · ${runtime.motion_enabled ? "运动已启用" : "仅规划"} · ${runtime.applied_revision ? "地图已应用" : "地图未应用"}`
     : "标注、保存和导出均可离线完成";
   $("start-pose").textContent = runtime.pose
     ? `X ${runtime.pose.x.toFixed(3)} m · Y ${runtime.pose.y.toFixed(3)} m\n朝向 ${((runtime.pose.yaw * 180) / Math.PI).toFixed(1)}° · map 坐标`
@@ -676,7 +665,7 @@ function renderRuntime() {
       : "离线编辑模式，请先连接 ROS";
   $("locate-start").disabled = !runtime.pose;
   $("ros-status").textContent = ros
-    ? `${connection.simulated ? "模拟小车" : "实车接口"} · ROS_DOMAIN_ID=${connection.domain_id ?? "—"}\n定位 TF：${runtime.pose ? "已接收" : "未就绪 / 已过期"}\n激光 ${connection.scan_topic || "/scan"}：${runtime.scan_age_s === null ? "未接收有效数据" : runtime.scan_age_s + " s"}\nNav2 规划 / 导航 action：${connection.planner_ready ? "已发现" : "未发现"} / ${connection.navigator_ready ? "已发现" : "未发现"}\n速度输出：${runtime.motion_enabled ? "已启用" : "关闭，仅规划"}`
+    ? `${connection.simulated ? "模拟小车" : "实车接口"} · ROS_DOMAIN_ID=${connection.domain_id ?? "—"}\n定位 TF：${runtime.pose ? "已接收" : "未就绪 / 已过期"}\n${connection.lidar_enabled === false ? "无雷达模式：按地图行驶，不检测临时障碍物" : "激光 " + (connection.scan_topic || "/scan") + "：" + (runtime.scan_age_s === null ? "未接收有效数据" : runtime.scan_age_s + " s")}\nNav2 规划 / 导航 action：${connection.planner_ready ? "已发现" : "未发现"} / ${connection.navigator_ready ? "已发现" : "未发现"}\n速度输出：${runtime.motion_enabled ? "已启用" : "关闭，仅规划"}`
     : "当前为离线编辑模式，未启动 ROS 适配节点";
 }
 async function poll() {
@@ -698,20 +687,6 @@ async function poll() {
     setTimeout(poll, 700);
   }
 }
-registration = new RegistrationPanel({
-  api,
-  action,
-  notice,
-  draw,
-  setTool,
-  loadState,
-  project: () => project,
-  revision: () => revision,
-  runtime: () => runtime,
-  saveIfNeeded: async () => {
-    if (dirty || !revision) await save();
-  },
-});
 new ResizeObserver(resize).observe(canvas);
 window.addEventListener("beforeunload", (e) => {
   if (dirty) {

@@ -194,19 +194,28 @@ class MapModel:
                 if abs(cv2.contourArea(contour)) < 1:
                     raise ValueError("多边形面积太小")
         if not isinstance(p["waypoints"], list) or len(p["waypoints"]) > 200:
-            raise ValueError("最多 200 个航点")
+            raise ValueError("最多 200 个途径点")
         ids = set()
         for wp in p["waypoints"]:
             wp["id"] = str(wp["id"])[:80]
             if wp["id"] in ids:
-                raise ValueError("航点 ID 重复")
+                raise ValueError("途径点 ID 重复")
             ids.add(wp["id"])
             wp["name"] = str(wp.get("name", wp["id"]))[:80]
             for key in ("x", "y", "yaw"):
                 wp[key] = finite(wp[key])
             gx, gy = self.world_to_grid(wp["x"], wp["y"])
             if not (0 <= gx < self.width and 0 <= gy < self.height):
-                raise ValueError("航点超出地图")
+                raise ValueError("途径点超出地图")
+        if "navigation_goal" in p:
+            target = p["navigation_goal"]
+            if not isinstance(target, dict):
+                raise ValueError("导航终点必须为坐标对象")
+            target = {key: finite(target[key]) for key in ("x", "y", "yaw")}
+            gx, gy = self.world_to_grid(target["x"], target["y"])
+            if not (0 <= gx < self.width and 0 <= gy < self.height):
+                raise ValueError("导航终点超出地图")
+            p["navigation_goal"] = target
         return p
 
     def rasterize(self, project):
@@ -289,6 +298,16 @@ class MapModel:
             max_cells=MAX_NAV_CELLS,
         )
         return model, output
+
+    def footprint_map(self, project):
+        """Physical obstacles for full-footprint checks; clearance is applied once.
+
+        navigation_map contains forbidden robot-center positions, including the
+        body radius. Local collision checking sweeps the actual body over this
+        separate obstacle map rather than adding that radius a second time.
+        """
+        physical = dict(project, clearance_m=0.0)
+        return self.navigation_map(physical)
 
     def navigation_preview(self, project):
         """Sample the published navigation grid in the original image geometry."""

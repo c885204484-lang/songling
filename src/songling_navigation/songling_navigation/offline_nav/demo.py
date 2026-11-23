@@ -25,6 +25,7 @@ class DemoRobot(Node):
         self.declare_parameter("map_yaml", "")
         self.declare_parameter("sample_map", False)
         self.declare_parameter("store", "")
+        self.use_lidar = self.declare_parameter("use_lidar", True).value
         filename = self.get_parameter("map_yaml").value
         saved = (
             ProjectStore(self.get_parameter("store").value).load()
@@ -56,7 +57,8 @@ class DemoRobot(Node):
         self.last_tf_stamp = None
         self.tf = TransformBroadcaster(self)
         self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
-        self.scan_pub = self.create_publisher(LaserScan, "/scan", 10)
+        if self.use_lidar:
+            self.scan_pub = self.create_publisher(LaserScan, "/scan", 10)
         durable = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -70,7 +72,8 @@ class DemoRobot(Node):
             String, "/offline_nav/demo_obstacles", self.set_obstacles, 1
         )
         self.create_timer(0.05, self.tick)
-        self.create_timer(0.1, self.scan)
+        if self.use_lidar:
+            self.create_timer(0.1, self.scan)
 
     def velocity(self, msg):
         self.cmd, self.cmd_at = msg, time.monotonic()

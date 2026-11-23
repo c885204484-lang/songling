@@ -86,6 +86,23 @@ def test_clearance_closes_narrow_corridor_and_shrinks_boundaries():
     assert m.is_free(grid, 1, 2)
 
 
+def test_footprint_map_keeps_original_obstacles_without_duplicate_body_clearance():
+    m = small_model()
+    p = open_project(m)
+    p["clearance_m"] = .65
+    p["forbidden"] = [[[3., .5], [5., .5], [5., 3.5], [3., 3.5]]]
+    physical, body_grid = m.footprint_map(p)
+    center, center_grid = m.navigation_map(p)
+    assert center.is_free(center_grid, 2.1, 2.)
+    # The center map already includes the body radius. These cells are not
+    # physical walls to be intersected with a second copy of the vehicle body.
+    assert not center.is_free(center_grid, 2.6, 2.)
+    assert physical.is_free(body_grid, 2.6, 2.)
+    assert not physical.is_free(body_grid, 3.5, 2.)
+    assert not physical.is_free(body_grid, -1., 2.)
+    assert p["clearance_m"] == .65
+
+
 @pytest.mark.parametrize("yaw", [0, 0.7, -math.pi / 2])
 def test_rotated_map_coordinates_and_masks(yaw):
     m = small_model((12.0, -8.0, yaw))
@@ -112,6 +129,27 @@ def test_invalid_edits_rejected(mutate):
     mutate(p)
     with pytest.raises(ValueError):
         m.rasterize(p)
+
+
+def test_saved_terminal_pose_round_trips_with_map(tmp_path):
+    m = small_model()
+    p = open_project(m)
+    x, y = m.grid_to_world(25, 20)
+    p["navigation_goal"] = dict(x=x, y=y, yaw=1.2)
+    store = ProjectStore(tmp_path)
+    store.save(m, p)
+    restored_model, restored = store.load()
+    assert restored_model.validate(restored)["navigation_goal"] == p["navigation_goal"]
+
+
+@pytest.mark.parametrize("target", [None, dict(x=float("nan"), y=0, yaw=0),
+                                    dict(x=10000, y=10000, yaw=0)])
+def test_invalid_saved_terminal_pose_rejected(target):
+    m = small_model()
+    p = open_project(m)
+    p["navigation_goal"] = target
+    with pytest.raises(ValueError):
+        m.validate(p)
 
 
 @pytest.mark.parametrize("yaw", [0.4, 1.2, -math.pi / 2])

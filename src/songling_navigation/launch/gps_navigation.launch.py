@@ -10,6 +10,7 @@ from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
@@ -29,6 +30,10 @@ def generate_launch_description():
                               description='GPS serial baud rate'),
         DeclareLaunchArgument('use_offline_map', default_value='False',
                               description='Use the local annotation workbench and constrained Nav2'),
+        DeclareLaunchArgument('use_lidar', default_value=PythonExpression([
+            "'False' if '", LaunchConfiguration('use_offline_map'),
+            "'.lower() == 'true' else 'True'",
+        ]), description='Enable lidar; offline map navigation defaults to GPS and wheel odometry without lidar'),
         DeclareLaunchArgument('offline_map', default_value='', description='Original map YAML in the GPS map frame'),
         DeclareLaunchArgument('offline_store', default_value=os.path.expanduser('~/.local/share/songling/offline_maps/xidian_hangzhou_lvxuelu177')),
         DeclareLaunchArgument('offline_enable_motion', default_value='False'),
@@ -72,11 +77,13 @@ def generate_launch_description():
         # ==========================================
         # 3. 雷达
         # ==========================================
-        LogInfo(msg="\n🛸 [3/8] 启动模块: 宇树 3D 激光雷达..."),
+        LogInfo(msg="\n🛸 [3/8] 启动模块: 宇树 3D 激光雷达...",
+                condition=IfCondition(LaunchConfiguration('use_lidar'))),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(get_package_share_directory('unitree_lidar_ros2'), 'launch.py')
-            )
+            ),
+            condition=IfCondition(LaunchConfiguration('use_lidar')),
         ),
         
         # ==========================================
@@ -124,16 +131,27 @@ def generate_launch_description():
         ),
         
         # 将3D压缩到2D
-        LogInfo(msg="\n🔪 [5.5/8] 启动模块: 3D点云转2D激光护盾切片..."),
+        LogInfo(msg="\n🔪 [5.5/8] 启动模块: 3D点云转2D激光护盾切片...",
+                condition=IfCondition(LaunchConfiguration('use_lidar'))),
         Node(
             package='pointcloud_to_laserscan',
             executable='pointcloud_to_laserscan_node',
             name='pointcloud_to_laserscan_node',
+            condition=IfCondition(LaunchConfiguration('use_lidar')),
             remappings=[
                 ('cloud_in', '/unilidar/cloud'),   
                 ('scan', '/scan')                  
             ],
-            parameters=[os.path.join(pkg_dir, 'config', 'pc_to_scan.yaml')]
+            parameters=[
+                os.path.join(pkg_dir, 'config', 'pc_to_scan.yaml'),
+                # At 0.1 m local resolution, 0.025 rad rays leave gaps beyond
+                # about 4 m. Old hits can survive between clearing rays even
+                # after the scanner reports open space. Cover the 12 m window.
+                {'angle_increment': ParameterValue(PythonExpression([
+                    "0.005 if '", LaunchConfiguration('use_offline_map'),
+                    "'.lower() == 'true' else 0.025",
+                ]), value_type=float)},
+            ]
         ),
         
         # ==========================================
@@ -146,7 +164,9 @@ def generate_launch_description():
             name='ekf_filter_node_odom',
             output='screen',
             parameters=[
-                os.path.join(pkg_dir, 'config', 'ekf_odom.yaml'),
+                PythonExpression(["'", pkg_dir, "/config/ekf_odom.yaml' if '",
+                                  LaunchConfiguration('use_lidar'), "'.lower() == 'true' else '",
+                                  pkg_dir, "/config/ekf_odom_no_lidar.yaml'"]),
                 {'use_sim_time': False}
             ],
             remappings=[('odometry/filtered', '/odometry/local')],
@@ -162,7 +182,9 @@ def generate_launch_description():
             name='ekf_filter_node_map',
             output='screen',
             parameters=[
-                os.path.join(pkg_dir, 'config', 'ekf_map.yaml'),
+                PythonExpression(["'", pkg_dir, "/config/ekf_map.yaml' if '",
+                                  LaunchConfiguration('use_lidar'), "'.lower() == 'true' else '",
+                                  pkg_dir, "/config/ekf_map_no_lidar.yaml'"]),
                 {'use_sim_time': False}
             ],
             remappings=[('odometry/filtered', '/odometry/global')],
@@ -218,6 +240,7 @@ def generate_launch_description():
                 'host': LaunchConfiguration('offline_host'),
                 'port': LaunchConfiguration('offline_port'),
                 'odom_topic': '/odometry/local',
+                'use_lidar': LaunchConfiguration('use_lidar'),
                 'demo': 'false',
             }.items(),
         ),

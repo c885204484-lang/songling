@@ -85,6 +85,75 @@ def test_fresh_safe_command_can_pass():
     assert NavigationBridge.velocity_block_reason(state()) == ""
 
 
+@pytest.mark.parametrize("gear", [2, 4, 6])
+def test_speed_gear_checks_and_caps_the_velocity_sent_to_the_chassis(gear):
+    data = state()
+    data.cmd.linear.x = 6 / 3.6
+    assert NavigationBridge.velocity_block_reason(data) == "速度指令超过上限"
+
+    data.speed_gear_kmh = gear
+    output = NavigationBridge.limit_command(data)
+    assert output.linear.x == pytest.approx(gear / 3.6)
+    assert NavigationBridge.velocity_block_reason(data, output) == ""
+    data.scan_points = [[1.0, 0.0]]
+    assert NavigationBridge.velocity_block_reason(data, output) == "预测轨迹遇到激光障碍"
+
+
+def test_speed_command_above_all_gears_is_rejected():
+    data = state()
+    data.speed_gear_kmh = 6
+    data.cmd.linear.x = 8 / 3.6
+    assert NavigationBridge.velocity_block_reason(data) == "速度指令超过上限"
+
+
+def test_speed_limit_reduces_linear_and_angular_motion_at_the_same_ratio():
+    data = state()
+    data.speed_gear_kmh = 6
+    data.cmd.linear.x, data.cmd.angular.z = 1.6, 1.6
+    output = NavigationBridge.limit_command(data)
+    assert output.linear.x == pytest.approx(0.8)
+    assert output.angular.z == pytest.approx(0.8)
+
+    data.cmd.angular.z = 0.0
+    data.tracking_goal = [1.5, 0.0]
+    assert NavigationBridge.limit_command(data).linear.x == pytest.approx(1.0)
+
+
+def test_speed_gear_slows_before_the_predicted_path_deviates():
+    data = state()
+    data.speed_gear_kmh = 6
+    data.cmd.linear.x, data.cmd.angular.z = 1.6, 0.8
+    assert NavigationBridge.velocity_block_reason(data, data.cmd).startswith("预测轨迹偏离")
+    output, reason = NavigationBridge.guarded_velocity(data)
+    assert reason == ""
+    assert 0.0 < output.linear.x < data.cmd.linear.x
+    assert output.angular.z / output.linear.x == pytest.approx(0.8 / 1.6)
+    assert NavigationBridge.velocity_block_reason(data, output) == ""
+
+
+def test_map_only_mode_runs_without_scan_and_ignores_old_laser_hits():
+    data = state()
+    data.use_lidar = False
+    data.scan_seen = 0.0
+    data.scan_points = [[0.0, 0.0]]
+    assert NavigationBridge.velocity_block_reason(data) == ""
+    data.use_lidar = True
+    assert NavigationBridge.velocity_block_reason(data) == "激光雷达数据过期"
+
+
+@pytest.mark.parametrize("field,value,expected", [
+    ("cmd_seen", 0.0, "速度指令过期"),
+    ("odometry_seen", 0.0, "里程计反馈过期"),
+    ("pose", dict(x=39.0, y=0.0, yaw=0.0), "预测轨迹超出可行驶区域"),
+])
+def test_map_only_mode_keeps_motion_and_map_guards(field, value, expected):
+    data = real_chassis_state()
+    data.use_lidar = False
+    data.scan_seen = 0.0
+    setattr(data, field, value)
+    assert NavigationBridge.velocity_block_reason(data).startswith(expected)
+
+
 def real_chassis_state():
     data = ticking_state()
     data.demo = False
@@ -303,6 +372,200 @@ def test_reconnection_with_large_local_pose_covariance_does_not_bypass_velocity_
     assert NavigationBridge.odometry_block_reason(data).startswith('里程计与底盘速度不一致')
 
 
+def test_brief_odometry_gap_holds_zero_until_three_samples_and_fresh_command(monkeypatch):
+    data = real_chassis_state()
+    now = time.monotonic()
+    monkeypatch.setattr(time, 'monotonic', lambda: now)
+    data.odometry_seen = now - .6
+    cancellations = []
+    data.action_handle = SimpleNamespace(cancel_goal_async=lambda: cancellations.append(True))
+    NavigationBridge.tick(data)
+    assert data.busy and data.navigation == '导航中'
+    assert data.odometry_waiting and data.output[-1].linear.x == 0.
+    assert not cancellations
+    for count in (1, 2, 3):
+        NavigationBridge.on_odometry(data, odometry_sample(data))
+        NavigationBridge.tick(data)
+        assert data.output[-1].linear.x == 0.
+        assert not cancellations
+        assert data.odometry_recovery_samples == count
+    assert not data.odometry_waiting
+    assert [e['event'] for e in data.odometry_events] == ['waiting', 'recovered']
+    command = Twist()
+    command.linear.x = .2
+    NavigationBridge.on_cmd(data, command)
+    NavigationBridge.tick(data)
+    assert data.output[-1].linear.x == .2
+
+
+def test_persistent_odometry_gap_cancels_after_holding_zero(monkeypatch):
+    data = real_chassis_state()
+    now = [time.monotonic()]
+    monkeypatch.setattr(time, 'monotonic', lambda: now[0])
+    data.odometry_seen = now[0] - .6
+    cancellations = []
+    data.action_handle = SimpleNamespace(cancel_goal_async=lambda: cancellations.append(True))
+    NavigationBridge.tick(data)
+    assert not cancellations and data.output[-1].linear.x == 0.
+    now[0] += .95
+    data.chassis_seen = now[0]
+    NavigationBridge.tick(data)
+    assert cancellations == [True]
+    assert '持续中断' in data.stop_reason
+    assert data.output[-1].linear.x == 0.
+    assert data.odometry_events[-1]['event'] == 'timeout'
+
+
+def test_recovery_uses_watchdog_freshness_instead_of_an_assumed_point_two_second_cadence(monkeypatch):
+    data = real_chassis_state()
+    now = [time.monotonic()]
+    monkeypatch.setattr(time, 'monotonic', lambda: now[0])
+    data.odometry_seen = now[0] - .6
+    cancellations = []
+    data.action_handle = SimpleNamespace(cancel_goal_async=lambda: cancellations.append(True))
+    NavigationBridge.tick(data)
+    for _ in range(4):
+        now[0] += .3
+        data.chassis_seen = now[0]
+        NavigationBridge.on_odometry(data, odometry_sample(data))
+        NavigationBridge.tick(data)
+        assert data.output[-1].linear.x == 0.
+    assert not cancellations
+    assert not data.odometry_waiting
+    assert data.odometry_events[-1]['event'] == 'recovered'
+
+
+def test_quarter_second_fresh_frame_after_old_deadline_does_not_cancel(monkeypatch):
+    data = real_chassis_state()
+    now = [time.monotonic()]
+    monkeypatch.setattr(time, 'monotonic', lambda: now[0])
+    data.require_wheel_odometry = True
+    data.wheel_odometry = dict(v=0., valid=True)
+    data.wheel_odometry_seen = now[0]
+    data.odometry_seen = now[0] - .51
+    cancellations = []
+    data.action_handle = SimpleNamespace(cancel_goal_async=lambda: cancellations.append(True))
+    NavigationBridge.tick(data)
+    assert data.odometry_waiting
+    now[0] += 1.03
+    data.chassis_seen = data.wheel_odometry_seen = data.scan_seen = data.pose_seen = now[0]
+    sample = odometry_sample(data)
+    stamp = sample.header.stamp.sec * 1_000_000_000 + sample.header.stamp.nanosec - 250_000_000
+    sample.header.stamp.sec, sample.header.stamp.nanosec = divmod(stamp, 1_000_000_000)
+    NavigationBridge.on_odometry(data, sample)
+    NavigationBridge.tick(data)
+    assert data.odometry_recovery_samples == 1
+    assert data.odometry_waiting and not cancellations
+    assert data.navigation == '导航中'
+    assert data.output[-1].linear.x == 0.
+    for count in (2, 3):
+        now[0] += .1
+        data.chassis_seen = data.wheel_odometry_seen = data.scan_seen = data.pose_seen = now[0]
+        NavigationBridge.on_odometry(data, odometry_sample(data))
+        NavigationBridge.tick(data)
+        assert data.odometry_recovery_samples == count
+        assert data.output[-1].linear.x == 0.
+    assert not data.odometry_waiting and not cancellations
+    command = Twist()
+    command.linear.x = .2
+    NavigationBridge.on_cmd(data, command)
+    NavigationBridge.tick(data)
+    assert data.output[-1].linear.x == .2
+
+
+def test_stale_packets_cannot_extend_a_real_gap_during_recovery(monkeypatch):
+    data = real_chassis_state()
+    now = [time.monotonic()]
+    monkeypatch.setattr(time, 'monotonic', lambda: now[0])
+    data.odometry_seen = now[0] - .6
+    cancellations = []
+    data.action_handle = SimpleNamespace(cancel_goal_async=lambda: cancellations.append(True))
+    NavigationBridge.tick(data)
+    now[0] += 1.
+    data.chassis_seen = now[0]
+    sample = odometry_sample(data)
+    sample.header.stamp.sec -= 2
+    NavigationBridge.on_odometry(data, sample)
+    NavigationBridge.tick(data)
+    assert cancellations == [True]
+    assert '持续中断' in data.stop_reason
+    assert data.output[-1].linear.x == 0.
+    assert not data.odometry_waiting
+
+
+def test_invalid_odometry_during_recovery_cancels_immediately():
+    data = real_chassis_state()
+    data.odometry_seen = time.monotonic() - .6
+    cancellations = []
+    data.action_handle = SimpleNamespace(cancel_goal_async=lambda: cancellations.append(True))
+    NavigationBridge.tick(data)
+    sample = odometry_sample(data)
+    sample.twist.covariance[0] = float('nan')
+    NavigationBridge.on_odometry(data, sample)
+    NavigationBridge.tick(data)
+    assert cancellations == [True]
+    assert '数值异常' in data.stop_reason
+
+
+def test_older_odometry_cannot_replace_newer_valid_velocity():
+    data = real_chassis_state()
+    sample = odometry_sample(data)
+    NavigationBridge.on_odometry(data, sample)
+    last_seen = data.odometry_seen
+    stamp = sample.header.stamp.sec * 1_000_000_000 + sample.header.stamp.nanosec - 100_000_000
+    sample.header.stamp.sec, sample.header.stamp.nanosec = divmod(stamp, 1_000_000_000)
+    sample.twist.twist.linear.x = .8
+    NavigationBridge.on_odometry(data, sample)
+    assert data.odometry['v'] == 0.
+    assert data.odometry_seen == last_seen
+
+
+def test_fresh_filter_output_cannot_hide_missing_raw_wheel_feedback():
+    data = real_chassis_state()
+    data.require_wheel_odometry = True
+    data.wheel_odometry = None
+    data.wheel_odometry_seen = 0.
+    cancellations = []
+    data.action_handle = SimpleNamespace(cancel_goal_async=lambda: cancellations.append(True))
+    assert '底盘原始里程计中断' in NavigationBridge.odometry_block_reason(data)
+    NavigationBridge.tick(data)
+    assert cancellations == [True]
+    assert data.output[-1].linear.x == 0.
+    assert data.odometry_events[-1]['event'] == 'wheel_feedback_unavailable'
+    assert data.odometry_events[-1]['wheel_age_s'] is None
+
+
+def test_wheel_watchdog_expires_even_while_filter_keeps_publishing():
+    data = real_chassis_state()
+    data.require_wheel_odometry = True
+    data.wheel_odometry = dict(v=0., valid=True)
+    data.wheel_odometry_seen = time.monotonic() - .6
+    data.odometry_seen = time.monotonic()
+    assert '底盘原始里程计中断' in NavigationBridge.velocity_block_reason(data)
+    data.wheel_odometry_seen = time.monotonic()
+    assert NavigationBridge.velocity_block_reason(data) == ''
+    data.odometry['valid'] = False
+    assert '里程计数值异常' in NavigationBridge.velocity_block_reason(data)
+
+
+@pytest.mark.parametrize('fault', ['stale', 'nan', 'frame'])
+def test_wheel_feedback_rejects_stale_or_invalid_measurements(fault):
+    data = real_chassis_state()
+    data.require_wheel_odometry = True
+    data.wheel_odometry = None
+    data.wheel_odometry_seen = 0.
+    sample = odometry_sample(data)
+    if fault == 'stale':
+        sample.header.stamp.sec -= 1
+    elif fault == 'nan':
+        sample.twist.twist.linear.x = float('nan')
+    else:
+        sample.child_frame_id = 'wrong_frame'
+    NavigationBridge.on_wheel_odometry(data, sample)
+    assert NavigationBridge.wheel_odometry_block_reason(data)
+    assert NavigationBridge.velocity_block_reason(data).startswith('底盘原始里程计')
+
+
 def test_chassis_loss_cancels_navigation_and_never_resumes_on_reconnection():
     data = real_chassis_state()
     cancellations = []
@@ -504,3 +767,21 @@ def test_unaligned_geographic_basemap_cannot_be_applied_to_real_robot():
     data.app.project = data.app.model.empty_project()
     with pytest.raises(ValueError, match="配准"):
         NavigationBridge.dispatch(data, "apply", {})
+
+
+def test_current_map_does_not_require_fitted_field_accuracy_for_navigation():
+    data = real_chassis_state()
+    data.source_model = SimpleNamespace(context={"georeference": {
+        "registration": {"accuracy_verified": False}}})
+    assert NavigationBridge.velocity_block_reason(data) == ''
+    data.chassis['vehicle_state'] = 2
+    assert '底盘急停' in NavigationBridge.velocity_block_reason(data)
+    data.chassis['vehicle_state'] = 0
+    data.scan_seen = 0.
+    assert '激光雷达数据过期' in NavigationBridge.velocity_block_reason(data)
+    data.scan_seen = time.monotonic()
+    data.scan_points = [[data.pose['x'], data.pose['y']]]
+    assert '激光障碍' in NavigationBridge.velocity_block_reason(data)
+    data.scan_points = []
+    data.active_grid[:] = 100
+    assert '超出可行驶区域' in NavigationBridge.velocity_block_reason(data)

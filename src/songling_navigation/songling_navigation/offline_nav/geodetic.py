@@ -122,7 +122,8 @@ def projected_document(model, project, report, revision):
     result['map'] = aligned.metadata()
     for kind in ('drivable', 'forbidden'):
         result[kind] = [[transform(point) for point in poly] for poly in result[kind]]
-    for point in result['waypoints']:
+    targets = result['waypoints'] + ([result['navigation_goal']] if 'navigation_goal' in result else [])
+    for point in targets:
         point['x'], point['y'] = transform([point['x'], point['y']])
         direction = matrix[:, :2] @ [math.cos(point['yaw']), math.sin(point['yaw'])]
         point['yaw'] = math.atan2(direction[1], direction[0])

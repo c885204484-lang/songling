@@ -9,6 +9,34 @@ import numpy as np
 from .maps import MapModel, finite
 
 
+def landmark_translation(model, payload):
+    """One identified landmark can preview translation, never verify field accuracy."""
+    points = payload.get("points")
+    if not isinstance(points, list) or len(points) != 1 or not isinstance(points[0], dict):
+        raise ValueError("单点平移预览需要一个地面对应点")
+    point = points[0]
+    source, target = point.get("map"), point.get("robot")
+    if (not isinstance(source, list) or not isinstance(target, list)
+            or len(source) != 2 or len(target) != 2):
+        raise ValueError("对应点需要地图和实测的两个米制坐标")
+    source, target = [finite(v) for v in source], [finite(v) for v in target]
+    if any(abs(v) > 1e8 for v in source + target):
+        raise ValueError("对应点坐标过大")
+    gx, gy = model.world_to_grid(*source)
+    if not (0 <= gx <= model.width and 0 <= gy <= model.height):
+        raise ValueError("配准点超出当前地图")
+    pair = dict(name=str(point.get("name", "现场参照点"))[:80], map=source,
+                robot=target, predicted=target, role="fit", error_m=0.0,
+                source=str(point.get("source", "manual_landmark"))[:40],
+                simulated=point.get("simulated") is True)
+    return dict(method="landmark_translation", scale=1.0, estimated_scale=1.0,
+                yaw=0.0, translation=[target[i]-source[i] for i in range(2)],
+                points=[pair], fit_count=1, check_count=0, fit_rms_m=0.0,
+                fit_max_m=0.0, check_max_m=None, max_error_m=0.75,
+                passed=False, simulated=pair["simulated"], accuracy_verified=False,
+                accuracy_note="单点平移预览；没有独立检查点，旋转、比例和现场精度均未核验")
+
+
 def fit_registration(model, payload):
     points = payload.get("points")
     if not isinstance(points, list) or not 3 <= len(points) <= 30:
@@ -123,6 +151,11 @@ def registered_document(model, project, report, source_revision):
             **{k: copy.deepcopy(v) for k, v in report.items() if k != "method"},
         ),
     )
+    geo["registration"]["accuracy_verified"] = bool(
+        report.get("accuracy_verified") is not False
+        and report.get("passed") and not report.get("simulated")
+        and report.get("fit_count", 0) >= 3 and report.get("check_count", 0) >= 1
+    )
     metadata["georeference"] = geo
     result_model = MapModel(model.image, metadata, model.display_image)
     result = copy.deepcopy(project)
@@ -134,4 +167,8 @@ def registered_document(model, project, report, source_revision):
     for waypoint in result["waypoints"]:
         waypoint["x"], waypoint["y"] = transform([waypoint["x"], waypoint["y"]])
         waypoint["yaw"] = math.remainder(waypoint["yaw"] + yaw, 2 * math.pi)
+    if "navigation_goal" in result:
+        goal = result["navigation_goal"]
+        goal["x"], goal["y"] = transform([goal["x"], goal["y"]])
+        goal["yaw"] = math.remainder(goal["yaw"] + yaw, 2 * math.pi)
     return result_model, result_model.validate(result)

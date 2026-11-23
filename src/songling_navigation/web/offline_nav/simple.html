@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>松灵 · 园区导航</title>
+    <link rel="stylesheet" href="/simple.css" />
+    <script type="module" src="/simple.js"></script>
+  </head>
+  <body class="compact-ui">
+    <header>
+      <div class="brand"><b class="logo">S</b><strong>园区导航 <span>西电杭研院</span></strong></div>
+      <div class="header-actions"><span id="connection" class="badge">连接中</span></div>
+    </header>
+    <main>
+      <section class="map-panel" aria-label="地图编辑区域">
+        <div id="site-banner" class="site-banner" hidden></div>
+        <div class="map-tools" aria-label="地图操作">
+          <button data-tool="pan" class="selected" aria-pressed="true">平移</button>
+          <button data-tool="goal" aria-pressed="false">终点</button>
+          <button data-tool="waypoint" aria-pressed="false">途径点</button>
+          <button data-tool="drivable" aria-pressed="false">可行驶区域编辑</button>
+          <button data-tool="forbidden" aria-pressed="false">禁行区编辑</button>
+        </div>
+        <div id="polygon-actions" hidden>
+          <button id="finish">完成多边形</button>
+          <button id="undo">撤销</button>
+          <button id="discard-polygon">放弃绘制</button>
+        </div>
+        <div class="map-toolbar">
+          <div>
+            <b id="tool-title">浏览地图</b
+            ><span id="map-label">MAP / 米制坐标</span>
+          </div>
+          <div class="row">
+            <button id="zoom-out" aria-label="缩小">−</button
+            ><span id="zoom">100%</span
+            ><button id="zoom-in" aria-label="放大">＋</button
+            ><button id="fit">适应窗口</button>
+          </div>
+        </div>
+        <canvas
+          id="map"
+          tabindex="0"
+          aria-label="地图，选择上方工具后点击标注"
+        ></canvas>
+        <div class="legend">
+          <span><i class="dot green-bg"></i>可行驶区</span
+          ><span><i class="dot red-bg"></i>禁行区</span
+          ><span><i class="dot blue-bg"></i>Nav2 路径</span
+          ><span><i class="dot amber-bg"></i>激光障碍</span>
+        </div>
+        <div class="coordinates">
+          <span id="coords">x — / y —</span><span id="scale-label"></span>
+        </div>
+      </section>
+      <aside class="right">
+        <div class="drive-controls">
+          <button id="apply" class="full">应用地图</button>
+          <button id="plan" class="full">规划路径</button>
+          <button id="navigate" class="primary full">开始导航</button>
+          <div class="section-title">快捷目的地 · 点击仅规划</div>
+          <div class="destination-row"><button id="destination-0" class="destination">导航到「点位一」</button><button data-edit-destination="0" aria-label="编辑点位一">设置</button></div>
+          <div class="destination-row"><button id="destination-1" class="destination">导航到「点位二」</button><button data-edit-destination="1" aria-label="编辑点位二">设置</button></div>
+          <div id="compact-status" role="status">正在连接…</div>
+          <div id="compact-pose">定位：等待数据</div><div id="compact-goal">终点：未选择</div>
+          <div id="compact-route" class="hint">路线：当前位置 → 终点</div>
+          <p id="compact-message" role="status" hidden></p>
+          <div class="utility-actions">
+            <button id="mask-info-open">区域信息</button>
+            <button id="settings-open">地图与设置</button>
+            <button id="speed-open" aria-haspopup="dialog" aria-controls="speed-dialog">速度调节</button>
+          </div>
+        </div>
+        <div class="stop-controls">
+          <button id="cancel" class="danger full">停止</button>
+          <button id="task-open" class="text-button">坐标 / 途径点 / 详情</button>
+        </div>
+      </aside>
+    </main>
+    <div id="vehicle-status" class="vehicle-status" aria-label="小车状态栏">
+      <span id="can-status">CAN：未知</span><span id="rc-status">遥控档位：未知</span><span id="pose-status">定位：等待</span><span id="motion-status">运动：未知</span>
+    </div>
+    <dialog id="settings-dialog">
+      <div class="section-title"><b>地图与设置</b><button id="settings-close">关闭</button></div>
+      <div class="settings-actions"><button id="ros-open">连接 ROS</button><button id="import-open">导入地图</button><button id="export">导出地图</button><button id="save" class="primary">保存地图</button></div>
+    </dialog>
+    <dialog id="mask-info-dialog">
+      <div class="section-title"><b>区域信息</b><button id="mask-info-close">关闭</button></div>
+      <div class="section-title"><span>保存状态</span><span id="dirty" class="muted">已保存</span></div>
+      <p class="hint" id="annotation-hint">仅可行驶区域内允许通行，禁行区优先。</p>
+        <label class="field"
+          >边界安全距离
+          <div>
+            <input
+              id="clearance"
+              type="number"
+              min="0"
+              max="5"
+              step="0.05"
+              value="0.65"
+            /><span>米</span>
+          </div></label
+        >
+        <p class="hint">
+          导航至少 0.65 米，包含车身半径。原地图的障碍物和未知区域始终禁行。
+        </p>
+        <button id="mask" class="full">保存并预览通行范围</button>
+        <label class="check"
+          ><input id="show-mask" type="checkbox" />高亮禁行范围</label
+        >
+        <div class="section-title">
+          <span>标注图层</span><span id="count">0</span>
+        </div>
+        <div id="layers" class="list"></div>
+        <div class="map-info" id="map-info"></div>
+        <details class="storage-info">
+          <summary>地图保存位置</summary>
+          <p class="hint">
+            保存在运行服务的小车 / Jetson 上；导出地图包则下载到浏览器所在电脑。
+          </p>
+          <code id="storage-path">尚未保存</code>
+          <p class="hint">
+            project.json：标注；basemap.png：卫星底图；navigation.yaml +
+            navigation.pgm：导航地图。重启自动恢复最近快照。
+          </p>
+        </details>
+    </dialog>
+    <dialog id="speed-dialog" aria-labelledby="speed-title">
+      <div class="section-title"><b id="speed-title">速度调节</b><button id="speed-close">关闭</button></div>
+      <p id="speed-status" class="hint" role="status">正在连接…</p>
+      <div class="speed-choices" role="group" aria-label="速度档位">
+        <button data-speed-kmh="6" aria-pressed="false" disabled>高速 <small>6 码</small></button>
+        <button data-speed-kmh="4" aria-pressed="false" disabled>中速 <small>4 码</small></button>
+        <button data-speed-kmh="2" aria-pressed="false" disabled>低速 <small>2 码</small></button>
+      </div>
+      <button id="speed-cancel" class="danger full" hidden>停止</button>
+    </dialog>
+    <dialog id="task-dialog"><div class="section-title"><b>导航任务</b><button id="task-close">关闭</button></div>
+        <div id="navigation-panel">
+          <div class="section-title">
+            <span>02 / 导航任务</span><span class="live-dot"></span>
+          </div>
+          <div class="runtime-card">
+            <span class="muted">当前状态</span>
+            <h2 id="nav-status">离线编辑</h2>
+            <p id="nav-message">加载中…</p>
+            <div id="sensor-status"></div>
+          </div>
+          <div class="section-title"><span>起点 · 小车当前位置</span></div>
+          <div id="start-pose" class="pose-readout">等待 ROS 定位</div>
+          <p class="hint">
+            规划和导航自动使用 map → base_link
+            的实时位置与朝向作为起点，随小车位置更新。
+          </p>
+          <button id="locate-start" class="full" disabled>
+            定位到当前起点
+          </button>
+          <div class="section-title">
+            <span>导航终点</span
+            ><button data-tool="goal" class="text-button">地图选点</button>
+          </div>
+          <div class="target-grid">
+            <label
+              >X / m<input
+                id="goal-x"
+                type="number"
+                step="0.1"
+                placeholder="地图选点" /></label
+            ><label
+              >Y / m<input
+                id="goal-y"
+                type="number"
+                step="0.1"
+                placeholder="地图选点" /></label>
+          </div>
+          <div class="section-title">
+            <span>途径点任务</span><span id="waypoint-count">0 个</span>
+          </div>
+          <div id="waypoints" class="list"></div>
+          <details><summary>编辑途径点坐标</summary><div id="waypoint-coordinates" class="list"></div></details>
+          <button id="plan-route" class="full">仅规划到终点（跳过途径点）</button>
+          <button id="route" class="full">按顺序经过途径点并到达终点</button>
+          <button id="clear-obstacles" class="full">清除仿真障碍</button>
+          <p class="hint">
+            点击右侧“应用地图”保存并启用区域修改。任务执行期间禁止切换地图。
+          </p>
+        </div>
+    </dialog>
+    <footer>
+      <span id="notice" role="status" aria-live="polite">正在载入地图…</span
+      ><span>西电杭研院 · 离线地图</span>
+    </footer>
+    <dialog id="destination-dialog">
+      <form id="destination-form">
+        <div class="section-title"><b>自定义快捷目的地</b><button type="button" id="destination-close">关闭</button></div>
+        <label class="field">名称<input id="destination-name" maxlength="20" required /></label>
+        <div class="target-grid"><label>X / m<input id="destination-x" type="number" step="any" required /></label><label>Y / m<input id="destination-y" type="number" step="any" required /></label></div>
+        <button id="destination-use-goal" type="button" class="full">使用地图已选终点</button>
+        <p class="hint">可先关闭弹窗，在地图选择终点，再返回使用。点位保存在当前浏览器，按地图区分；点击快捷目的地只生成轨迹。</p>
+        <button type="submit" class="primary full">保存点位</button>
+      </form>
+    </dialog>
+    <dialog id="ros-dialog">
+      <div class="section-title">
+        <b>连接 ROS 2</b><button id="ros-close">关闭</button>
+      </div>
+      <p class="hint">
+        浏览器连接本机网页服务，由服务接入 ROS 2。以 ROS
+        模式启动后，下方显示接口状态。
+      </p>
+      <pre id="ros-status">当前为离线编辑模式</pre>
+      <h3>接实车：现有底盘、激光雷达、GPS 定位</h3>
+      <p class="hint">
+        在小车 / Jetson 终端执行，先停止原网页服务和原导航
+        launch，以免端口或节点重复。
+      </p>
+      <pre>
+cd ~/songling/songling_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch songling_navigation gps_navigation.launch.py use_offline_map:=True</pre
+      >
+      <p class="hint">
+        此命令恢复已保存地图，默认仅规划。实车启动参数
+        offline_enable_motion:=True 可启用行驶。卫星底图必须先与 RTK / SLAM 的
+        map 坐标配准，当前未配准底图会被拒绝用于实车导航。
+      </p>
+      <h3>先用模拟小车连接</h3>
+      <pre>
+ros2 launch songling_navigation offline_navigation.launch.py demo:=true enable_motion:=true</pre
+      >
+      <p class="hint">
+        两种启动方式选一种。仿真默认起点为 map (0,
+        0)，需落在可行驶区。启动后刷新本页，保存并应用地图，再选终点、仅规划。
+      </p>
+      <p class="hint">
+        跨设备时 ROS_DOMAIN_ID 需一致，并允许 DDS
+        通信。浏览器仍访问运行服务的地址；同机为 http://127.0.0.1:8080。
+      </p>
+    </dialog>
+    <dialog id="navigation-dialog" aria-labelledby="navigation-title">
+      <div class="section-title"><b id="navigation-title">选择导航方式</b><button id="navigation-close" type="button">取消</button></div>
+      <p id="mission-summary" class="hint"></p>
+      <label id="resume-target-field" class="field">继续任务的下一目标
+        <select id="resume-target"></select>
+      </label>
+      <p id="resume-help" class="hint"></p>
+      <div class="navigation-choices">
+        <button id="mission-resume" class="primary" type="button">继续刚才的任务</button>
+        <button id="mission-restart" type="button">从途径点 1 重新执行</button>
+        <button id="mission-direct" type="button">仅到终点（跳过所有途径点）</button>
+      </div>
+      <p class="hint">继续时从当前位置规划剩余目标；遇到障碍仍会停车，任务进度会保留。</p>
+    </dialog>
+    <dialog id="import-dialog">
+      <form id="import-form">
+        <div class="section-title">
+          <b>导入离线地图</b
+          ><button type="button" id="import-close">关闭</button>
+        </div>
+        <p class="hint">
+          选择 ROS 地图 YAML 和它对应的 PGM / PNG
+          图片。恢复园区地图包时，同时选择 basemap.png 彩色底图，可一并载入
+          project.json。
+        </p>
+        <label class="field"
+          >地图 YAML<input
+            id="yaml-file"
+            type="file"
+            accept=".yaml,.yml"
+            required /></label
+        ><label class="field"
+          >地图图片<input
+            id="image-file"
+            type="file"
+            accept=".pgm,.png,.jpg,.jpeg"
+            required /></label
+        ><label class="field"
+          >彩色底图（园区地图包需要）<input
+            id="basemap-file"
+            type="file"
+            accept=".png,.jpg,.jpeg" /></label
+        ><label class="field"
+          >标注项目（可选）<input
+            id="project-file"
+            type="file"
+            accept=".json" /></label
+        ><button class="primary full" type="submit">导入并保存新地图</button>
+        <p class="hint">当前地图的历史快照会保留在本地数据目录。</p>
+      </form>
+    </dialog>
+  </body>
+</html>

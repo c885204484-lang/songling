@@ -13,7 +13,7 @@ import yaml
 
 from .maps import MapModel, finite, image_from_upload
 from .store import ProjectStore
-from .registration import fit_registration, registered_document
+from .registration import fit_registration, registered_document, landmark_translation
 from .geodetic import geographic_samples, projection_report, projected_document
 
 
@@ -139,11 +139,14 @@ class Application:
             if project != stored:
                 raise ValueError("请先保存当前标注，再进行地图配准")
             automatic = payload.get("method") == "geodetic_fromll"
+            partial_translation = payload.get("method") == "landmark_translation"
             if automatic:
                 if not self.bridge or not hasattr(self.bridge, "project_geographic"):
                     raise ValueError("自动对齐需要连接带 /fromLL 接口的 GPS 定位模块")
                 samples = geographic_samples(model)
                 report = projection_report(model, samples, self.bridge.project_geographic(samples))
+            elif partial_translation:
+                report = landmark_translation(model, payload)
             else:
                 report = fit_registration(model, payload)
             if self.bridge and self.bridge.status().get("connection", {}).get(
@@ -154,7 +157,7 @@ class Application:
                 return report
             if not automatic and payload.get("fixed_frame_confirmed") is not True:
                 raise ValueError("请先确认定位 map 坐标原点及朝向已固定，重启后保持一致")
-            if not report["passed"]:
+            if not partial_translation and not report["passed"]:
                 raise ValueError("需要至少一个独立检查点，且所有配准点和检查点误差均不超过允许值")
             if revision is None:
                 raise ValueError("请先保存原地图快照，再另存配准地图")
@@ -217,6 +220,10 @@ def serve(app, host, port, assets):
                     return self.respond(200, out.getvalue(), "image/png")
                 filename = {
                     "/": "index.html",
+                    "/simple": "simple.html",
+                    "/simple/": "simple.html",
+                    "/simple.js": "simple.js",
+                    "/simple.css": "simple.css",
                     "/app.js": "app.js",
                     "/registration.js": "registration.js",
                     "/style.css": "style.css",
@@ -267,7 +274,9 @@ def serve(app, host, port, assets):
                     "/api/plan",
                     "/api/goal",
                     "/api/route",
+                    "/api/resume",
                     "/api/cancel",
+                    "/api/speed",
                     "/api/obstacles",
                 ):
                     if not app.bridge:
@@ -337,7 +346,7 @@ def main():
     node = executor = None
     if options.ros:
         import rclpy
-        from rclpy.executors import SingleThreadedExecutor
+        from rclpy.executors import MultiThreadedExecutor
         from .ros_bridge import NavigationBridge
 
         rclpy.init(args=ros_args)
@@ -345,7 +354,7 @@ def main():
             app, options.enable_motion, options.scan_topic, options.demo
         )
         app.bridge = node
-        executor = SingleThreadedExecutor()
+        executor = MultiThreadedExecutor(num_threads=2)
         executor.add_node(node)
     server = serve(app, options.host, options.port, assets)
     print(

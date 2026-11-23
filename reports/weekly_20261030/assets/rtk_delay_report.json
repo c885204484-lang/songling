@@ -1,0 +1,113 @@
+{
+  "source": "/tmp/songling-rtk-navigation.jsonl",
+  "observed_gga_qualities": [
+    4
+  ],
+  "heading_alignment": [
+    {
+      "interval_s": [
+        36.0,
+        44.0
+      ],
+      "best_delay_s": 2.85,
+      "aligned_rms_deg": 1.6431284764482896,
+      "unaligned_rms_deg": 15.17163793024665
+    },
+    {
+      "interval_s": [
+        65.8,
+        72.5
+      ],
+      "best_delay_s": 2.85,
+      "aligned_rms_deg": 3.288559135676959,
+      "unaligned_rms_deg": 16.25124919668816
+    }
+  ],
+  "displacement_checks": [
+    {
+      "interval_s": [
+        36.947,
+        39.9567
+      ],
+      "gnss_displacement_m": 0.0006474160653907688,
+      "wheel_imu_displacement_m": 1.3928429220597665
+    },
+    {
+      "interval_s": [
+        44.4493,
+        48.0496
+      ],
+      "gnss_displacement_m": 0.647004480228511,
+      "wheel_imu_displacement_m": 1.886139963633293e-05
+    },
+    {
+      "interval_s": [
+        66.0518,
+        68.55
+      ],
+      "gnss_displacement_m": 0.0007781539982927638,
+      "wheel_imu_displacement_m": 0.938156873950416
+    },
+    {
+      "interval_s": [
+        73.0595,
+        75.5591
+      ],
+      "gnss_displacement_m": 0.7233873970152425,
+      "wheel_imu_displacement_m": 3.779834147436225e-05
+    }
+  ],
+  "limitations": [
+    "Delay is estimated from motion correlation, not receiver timestamps.",
+    "The recorder first-observed path is not guaranteed to be the workbench latched path.",
+    "Receiver clock vs host clock and serial buffering require a separate stationary capture."
+  ],
+  "remediation": {
+    "receiver_command": "UNLOG GPGSV",
+    "saved": true,
+    "raw_latency_median_s": 0.02727794647216797,
+    "post_restart_ros_latency_median_s": 0.029123425483703613,
+    "post_restart_ros_latency_max_s": 0.10331034660339355,
+    "post_restart_gga_qualities": [
+      4
+    ],
+    "dynamic_navigation_retest": "pending"
+  },
+  "dynamic_navigation_retest": {
+    "result": "planner failed near goal; tracking delay resolved",
+    "gnss_quality": 4,
+    "gnss_clock_median_s": 0.029524803161621094,
+    "latest_path_error_median_m": 0.02889373058525402,
+    "latest_path_error_max_m": 0.2035142060023973,
+    "goal_xy": [
+      -0.46,
+      -21.54
+    ],
+    "stopped_xy": [
+      -0.303,
+      -20.104
+    ],
+    "later_fault": "USB CAN adapter re-enumerated; can0 DOWN; chassis feedback absent",
+    "staged_fixes": [
+      "Validate and reuse collision-free path; replan on invalidation or updated goal",
+      "Activate gs_usb can0 at 500000 bit/s on hotplug",
+      "Reload ROS launch to reset extrapolated EKF state"
+    ]
+  },
+  "final_verification": {
+    "result": "Goal succeeded; Reached the goal; Nav2 status 4",
+    "start_xy": [
+      -0.65,
+      -0.26
+    ],
+    "goal_xy": [
+      -1.82,
+      -15.0
+    ],
+    "straight_line_distance_m": 14.786361959589655,
+    "elapsed_s": 33.38,
+    "chassis_speed_after_m_s": 0.0,
+    "chassis_ready": true,
+    "odometry_ready": true
+  }
+}

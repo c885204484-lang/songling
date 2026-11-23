@@ -1,6 +1,10 @@
 """Offline editor and Nav2; use demo:=true for a hardware-free simulation."""
 
 import os
+import tempfile
+import yaml
+
+from songling_navigation.offline_nav.sensors import nav2_sensor_config
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -13,6 +17,13 @@ def nodes(context):
     share = get_package_share_directory("songling_navigation")
     get = lambda key: LaunchConfiguration(key).perform(context)
     params = get("params_file")
+    use_lidar = get("use_lidar").lower() == "true"
+    if not use_lidar:
+        with open(params) as stream:
+            config = nav2_sensor_config(yaml.safe_load(stream), False)
+        with tempfile.NamedTemporaryFile(mode="w", prefix="songling-map-only-", suffix=".yaml", delete=False) as stream:
+            yaml.safe_dump(config, stream)
+            params = stream.name
     demo = get("demo").lower() == "true"
     motion = get("enable_motion").lower() == "true"
     map_path = get("map")
@@ -54,7 +65,7 @@ def nodes(context):
             package="songling_navigation",
             executable="offline_map_editor",
             arguments=args,
-            parameters=[{"odom_topic": get("odom_topic")}],
+            parameters=[{"odom_topic": get("odom_topic"), "use_lidar": use_lidar}],
             output="screen",
         )
     ]
@@ -95,6 +106,7 @@ def nodes(context):
                         "map_yaml": map_path,
                         "store": get("store"),
                         "sample_map": get("sample_map").lower() == "true",
+                        "use_lidar": use_lidar,
                     }
                 ],
             )
@@ -127,6 +139,10 @@ def generate_launch_description():
             DeclareLaunchArgument("host", default_value="127.0.0.1"),
             DeclareLaunchArgument("port", default_value="8080"),
             DeclareLaunchArgument("odom_topic", default_value="/odom"),
+            DeclareLaunchArgument(
+                "use_lidar", default_value="true",
+                description="Use laser obstacle layers and require fresh scans; false uses the annotated map only",
+            ),
             DeclareLaunchArgument(
                 "store",
                 default_value=os.path.expanduser(
