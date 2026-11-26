@@ -24,7 +24,7 @@ def generate_launch_description():
         robot_desc = infp.read()
     
     return LaunchDescription([
-        DeclareLaunchArgument('gps_port', default_value='/dev/ttyACM0',
+        DeclareLaunchArgument('gps_port', default_value='/dev/wheeltec_gnss',
                               description='GPS serial device'),
         DeclareLaunchArgument('gps_baud', default_value='115200',
                               description='GPS serial baud rate'),

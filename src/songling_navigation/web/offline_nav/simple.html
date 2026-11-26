@@ -241,6 +241,7 @@ ros2 launch songling_navigation offline_navigation.launch.py demo:=true enable_m
     </dialog>
     <dialog id="navigation-dialog" aria-labelledby="navigation-title">
       <div class="section-title"><b id="navigation-title">选择导航方式</b><button id="navigation-close" type="button">取消</button></div>
+      <p id="navigation-feedback" class="hint" role="status" aria-live="polite" hidden></p>
       <p id="mission-summary" class="hint"></p>
       <label id="resume-target-field" class="field">继续任务的下一目标
         <select id="resume-target"></select>

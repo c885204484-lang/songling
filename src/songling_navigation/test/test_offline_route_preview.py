@@ -14,7 +14,8 @@ from nav_msgs.msg import Path
 from action_msgs.msg import GoalStatus
 from songling_navigation.offline_nav.ros_bridge import NavigationBridge
 from songling_navigation.offline_nav.behavior import snapshot_navigation_trees
-from songling_navigation.offline_nav.heading_search import HeadingSearch
+from songling_navigation.offline_nav.heading_search import HeadingSearch, planned_tangents
+from songling_navigation.offline_nav.maps import MapModel
 
 
 class Planner:
@@ -77,9 +78,10 @@ def test_single_goal_preview_still_uses_single_pose_planner():
 def test_point_only_preview_uses_planner_without_sending_navigation():
     data = bridge()
     data.goal_client = Planner()
-    NavigationBridge.dispatch(data, "plan", {"auto_heading": True, "x": 2., "y": 1.})
+    NavigationBridge.dispatch(data, "plan", {"x": 2., "y": 1.})
     attempt = data.plan_client.goals[0]
     assert attempt.use_start is True
+    assert attempt.planner_id == "RouteGuide"
     assert attempt.start.pose.position.x == 0.
     assert attempt.goal.pose.position.x == 2.
     assert data.busy and data.navigation == "规划中"
@@ -91,7 +93,8 @@ def test_automatic_headings_revisit_waypoint_when_next_segment_is_blocked():
         def send_goal_async(self, goal):
             accepted = super().send_goal_async(goal)
             result = Future()
-            blocked = goal.start.pose.position.x == 2. and abs(goal.start.pose.orientation.z) < 0.1
+            blocked = (goal.planner_id == "GridBased" and goal.start.pose.position.x == 2.
+                       and abs(goal.start.pose.orientation.z) < 0.1)
             result.set_result(SimpleNamespace(
                 status=GoalStatus.STATUS_ABORTED if blocked else GoalStatus.STATUS_SUCCEEDED,
                 result=SimpleNamespace(path=Path(poses=[goal.start, goal.goal])),
@@ -109,8 +112,27 @@ def test_automatic_headings_revisit_waypoint_when_next_segment_is_blocked():
             break
     assert result is not None
     targets, path = result
-    assert targets[0]["yaw"] == pytest.approx(math.pi / 4)
+    assert targets[0]["yaw"] == pytest.approx(math.pi / 12)
     assert path == [[0., 0.], [2., 0.], [4., 0.]]
+
+
+def test_point_selection_reports_the_path_tangent_instead_of_stored_yaw():
+    targets = [dict(x=2., y=0., yaw=1.0), dict(x=2., y=2., yaw=0.0)]
+    angles = planned_tangents(targets, [[0., 0.], [2., 0.], [2., 1.], [2., 2.]])
+    assert all(pose['yaw'] == pytest.approx(math.pi / 2) for pose in angles)
+
+
+def test_disconnected_point_fails_before_requesting_any_heading():
+    data = bridge()
+    data.active_model = MapModel.demo()
+    data.active_grid = data.active_model.base.copy()
+    data.active_grid[:, 200] = 100
+    data.active_components = data.active_model.safe_components(data.active_grid)
+    data.source_model = data.app.model = data.active_model
+    with pytest.raises(ValueError, match='当前位置与终点在安全地图上不连通'):
+        NavigationBridge.dispatch(data, 'plan', dict(x=25., y=0.))
+    assert data.navigation == '规划失败'
+    assert not data.plan_client.goals
 
 
 def test_preview_waits_for_planner_resolution_refresh():
@@ -139,14 +161,15 @@ def test_current_satellite_map_can_preview_and_start_without_registration_gate()
     assert not data.plan_client.goals
 
 
-def test_changed_tree_gets_a_new_filename_without_replacing_cached_xml(tmp_path):
+@pytest.mark.parametrize('use_lidar, prefix', [(True, 'offline'), (False, 'offline_fixed')])
+def test_changed_tree_gets_a_new_filename_without_replacing_cached_xml(tmp_path, use_lidar, prefix):
     source = tmp_path / 'source'
     source.mkdir()
-    for filename in ('offline_to_pose.xml', 'offline_through_poses.xml'):
+    for filename in (f'{prefix}_to_pose.xml', f'{prefix}_through_poses.xml'):
         (source / filename).write_text('<root>original</root>')
-    old = snapshot_navigation_trees(source, tmp_path / 'cache')
-    (source / 'offline_through_poses.xml').write_text('<root>updated</root>')
-    new = snapshot_navigation_trees(source, tmp_path / 'cache')
+    old = snapshot_navigation_trees(source, tmp_path / 'cache', use_lidar=use_lidar)
+    (source / f'{prefix}_through_poses.xml').write_text('<root>updated</root>')
+    new = snapshot_navigation_trees(source, tmp_path / 'cache', use_lidar=use_lidar)
     assert new['goal'] == old['goal']
     assert new['route'] != old['route']
     from pathlib import Path

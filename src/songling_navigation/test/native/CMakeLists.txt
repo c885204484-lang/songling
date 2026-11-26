@@ -14,7 +14,9 @@ ament_target_dependencies(footprint_clearance nav2_costmap_2d)
 add_test(NAME footprint_clearance COMMAND footprint_clearance)
 add_test(NAME controller_recovery COMMAND controller_recovery
   ${CMAKE_CURRENT_SOURCE_DIR}/../../behavior_trees/offline_to_pose.xml
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../behavior_trees/offline_through_poses.xml)
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../behavior_trees/offline_through_poses.xml
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../behavior_trees/offline_fixed_to_pose.xml
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../behavior_trees/offline_fixed_through_poses.xml)
 add_test(NAME scan_clearing COMMAND scan_clearing)
 set_tests_properties(scan_clearing PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=94;ROS_LOG_DIR=/tmp/songling-native-regression-ros")
 find_package(rclcpp REQUIRED)

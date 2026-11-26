@@ -42,7 +42,7 @@ from .planner_sync import PlannerResolutionSync
 from .behavior import snapshot_navigation_trees
 from .mission import MissionJournal
 from .collision import CollisionRecorder
-from .heading_search import HeadingSearch, stamped_pose
+from .heading_search import HeadingSearch, planned_tangents, stamped_pose
 
 
 SPEED_GEARS_MPS = {kmh: kmh / 3.6 for kmh in (2, 4, 6)}
@@ -50,6 +50,7 @@ MAX_GEAR_SPEED_MPS = max(SPEED_GEARS_MPS.values())
 DEFAULT_LINEAR_LIMIT = 0.7
 ANGULAR_LIMIT = 0.8
 PREDICTION_HORIZON = 1.5
+PATH_BOUNDARY_ERROR = "规划路径穿过禁行区或边界安全带，请调整起点或目标位置"
 
 
 def yaw_of(q):
@@ -115,12 +116,15 @@ class NavigationBridge(Node):
         # Keep sensor receipt independent of map edits and control callbacks.
         self.telemetry_group = MutuallyExclusiveCallbackGroup()
         from ament_index_python.packages import get_package_share_directory
-        self.behavior_trees = snapshot_navigation_trees(
-            FilePath(get_package_share_directory("songling_navigation")) / "behavior_trees",
-            tempfile.mkdtemp(prefix="songling-navigation-bt-"),
+        tree_source = FilePath(get_package_share_directory("songling_navigation")) / "behavior_trees"
+        tree_cache = tempfile.mkdtemp(prefix="songling-navigation-bt-")
+        self.behavior_trees = snapshot_navigation_trees(tree_source, tree_cache, use_lidar=self.use_lidar)
+        self.position_trees = snapshot_navigation_trees(
+            tree_source, tree_cache, use_lidar=self.use_lidar, position_only=True,
         )
         self.get_logger().info(f"Navigation trees: {self.behavior_trees}")
         self.active_model = self.active_grid = None
+        self.active_components = None
         self.source_model = None
         self.applied_at = 0.0
         self.applied_revision = None
@@ -443,8 +447,11 @@ class NavigationBridge(Node):
             return
         stamp = msg.stamp.sec * 1_000_000_000 + msg.stamp.nanosec
         detail = planning_failure(msg.msg)
-        if detail and not getattr(self, "use_lidar", True) and "detected collision ahead" in msg.msg.lower():
-            detail = "控制器检测到车身与地图障碍的碰撞风险，已停止：请检查禁行区边界及定位偏差"
+        if detail and not getattr(self, "use_lidar", True):
+            if "detected collision ahead" in msg.msg.lower():
+                detail = "控制器检测到车身与地图障碍的碰撞风险，已停止：请检查禁行区边界及定位偏差"
+            elif detail.startswith("起点在障碍代价区内"):
+                detail = "起点在障碍代价区内，请核对小车位置、禁行区及边界安全带"
         with self.state_lock:
             if detail and self.operation_started_ns and stamp >= self.operation_started_ns:
                 if "detected collision ahead" in msg.msg.lower() and getattr(self, "collision_recorder", None):
@@ -511,13 +518,15 @@ class NavigationBridge(Node):
             with self.state_lock:
                 if getattr(self, "heading_search", None) is not None:
                     return
+                if self.tracking_path and not getattr(self, "use_lidar", True):
+                    # A /plan publication must not replace the fixed tracking reference.
+                    return
                 stamp = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
                 if stamp < self.operation_started_ns:
                     return
                 path = [[p.pose.position.x, p.pose.position.y] for p in msg.poses]
                 if len(path) < 2 or not all(math.isfinite(v) for p in path for v in p):
                     return
-                self.path = path
                 if (not self.tracking_goal or not self.busy
                         or self.navigation not in ("导航中", "正在接受目标")
                         or self.stop_reason
@@ -530,10 +539,19 @@ class NavigationBridge(Node):
                 if (not self.pose or time.monotonic() - self.pose_seen > .5
                         or math.dist(path[0], [self.pose["x"], self.pose["y"]]) > .75):
                     return
+                if not self.active_model.path_is_free(self.active_grid, path):
+                    self.stop_reason = PATH_BOUNDARY_ERROR
+                    self.navigation, self.message = "取消中", self.stop_reason
+                    if self.action_handle:
+                        self.action_handle.cancel_goal_async()
+                    self.stop()
+                    return
                 # Nav2 can legitimately replace an obstructed path. Following
                 # that new path while predicting against the first path causes
                 # false stops. The gate and display must use the same reference.
-                self.tracking_path = copy.deepcopy(path)
+                self.path = self.tracking_path = path
+                if self.planned_targets:
+                    self.planned_targets = planned_tangents(self.planned_targets, path)
                 # Wait for a fresh controller command after the path change;
                 # the previous command may still belong to the previous path.
                 self.cmd_seen = 0.0
@@ -791,7 +809,7 @@ class NavigationBridge(Node):
                 return
             try:
                 with self.state_lock:
-                    search, name, route = self.heading_search
+                    search, name, route, resume_index = self.heading_search
                     try:
                         result = search.advance()
                         if result is None:
@@ -799,14 +817,17 @@ class NavigationBridge(Node):
                         targets, path = result
                         if self.app.model is not self.source_model or self.app.project != self.applied_project:
                             raise ValueError("保存的地图已变化，请重新应用后规划")
+                        if not self.active_model.path_is_free(self.active_grid, path):
+                            raise ValueError(PATH_BOUNDARY_ERROR)
                         self.heading_search, self.busy = None, False
                         if name == "plan":
                             self.operation_started_ns = self.get_clock().now().nanoseconds
-                            self.navigation, self.message = "规划完成", "已自动确定途径点和终点的行驶朝向"
+                            self.navigation, self.message = "规划完成", "途径点和终点的朝向由路径切线确定"
                             self.path = path
                         else:
-                            self.dispatch(name, {"poses": targets} if route else targets[0], automatic=True)
-                        self.planned_targets = targets
+                            self.dispatch(name, {"poses": targets} if route else targets[0],
+                                          automatic=True, resume_index=resume_index)
+                        self.planned_targets = planned_tangents(targets, path)
                     except Exception as exc:
                         search.cancel()
                         self.heading_search, self.busy = None, False
@@ -816,7 +837,7 @@ class NavigationBridge(Node):
         finally:
             self.app.edit_lock.release()
 
-    def dispatch(self, name, payload, *, automatic=False):
+    def dispatch(self, name, payload, *, automatic=False, resume_index=None):
         if name == "cancel":
             search = getattr(self, "heading_search", None)
             if search is not None:
@@ -854,11 +875,12 @@ class NavigationBridge(Node):
             return {"ok": True}
         if self.busy:
             raise ValueError("已有规划或导航任务，请先取消")
-        resume_index = None
         if name == "resume":
             resume_index, targets = self.mission.prepare_resume(payload, self.app.map_id, self.app.project)
             name = "route" if len(targets) > 1 else "goal"
-            payload = {"poses": targets} if name == "route" else targets[0]
+            payload = {"poses": targets} if name == "route" else dict(targets[0])
+            if self.mission.data.get("automatic_headings"):
+                payload["auto_heading"] = True
         if name == "apply":
             self.stop()
             source_model, project = self.app.model, copy.deepcopy(self.app.project)
@@ -875,7 +897,9 @@ class NavigationBridge(Node):
             model, grid = source_model.navigation_map(project)
             if not (grid == 0).any():
                 raise ValueError("没有可行驶栅格，请检查可行驶区域、禁行区和安全边距")
+            components = model.safe_components(grid)
             self.active_model, self.active_grid = model, grid
+            self.active_components = components
             self.source_model = source_model
             self.applied_project = project
             self.applied_revision = self.app.revision or "初始地图"
@@ -920,6 +944,8 @@ class NavigationBridge(Node):
             self.applied_at = time.monotonic()
             self.navigation, self.message = "地图已应用", "可设置终点并请求 Nav2 规划"
             self.path = []
+            self.tracking_path = []
+            self.tracking_goal = None
             self.planned_targets = []
             return {"ok": True, "free_cells": int((grid == 0).sum())}
         if name not in ("plan", "goal", "route"):
@@ -946,12 +972,26 @@ class NavigationBridge(Node):
         )
         if not isinstance(targets, list) or not 1 <= len(targets) <= 200:
             raise ValueError("需要 1–200 个目标")
-        auto_heading = payload.get("auto_heading") is True
+        auto_heading = payload.get("auto_heading") is True or all("yaw" not in target for target in targets)
         coordinates = []
-        for target in targets:
+        components = getattr(self, "active_components", None)
+        if components is not None:
+            start_x, start_y = self.active_model.world_to_grid(self.pose["x"], self.pose["y"])
+            start_component = components[int(start_y), int(start_x)]
+        for index, target in enumerate(targets):
             x, y = (finite(target[k]) for k in ("x", "y"))
             if not self.active_model.is_free(self.active_grid, x, y):
                 raise ValueError("终点或途径点超出可行驶区域，或位于禁行区、未知区或边界安全带内")
+            if components is not None:
+                gx, gy = self.active_model.world_to_grid(x, y)
+                if components[int(gy), int(gx)] != start_component:
+                    point = "终点" if index == len(targets) - 1 else f"途径点 {index + 1}"
+                    self.navigation = "规划失败"
+                    self.message = f"当前位置与{point}在安全地图上不连通，请检查连接道路和禁行区边界"
+                    self.path = self.tracking_path = self.planned_targets = []
+                    self.tracking_goal = None
+                    self.operation_started_ns = self.get_clock().now().nanoseconds
+                    raise ValueError(self.message)
             coordinates.append(dict(x=x, y=y) if auto_heading else dict(x=x, y=y, yaw=finite(target["yaw"])))
         if name != "plan" and not self.motion:
             raise ValueError("启动参数未启用运动；可先使用仅规划")
@@ -967,11 +1007,14 @@ class NavigationBridge(Node):
         if auto_heading:
             if not self.plan_client.server_is_ready():
                 raise ValueError("Nav2 规划器尚未就绪，请检查生命周期及代价地图")
-            search = HeadingSearch(self.plan_client, self.get_clock, self.pose, coordinates)
-            self.heading_search = (search, name, "poses" in payload)
+            search = HeadingSearch(
+                self.plan_client, self.get_clock, self.pose, coordinates,
+                path_is_free=lambda path: self.active_model.path_is_free(self.active_grid, path),
+            )
+            self.heading_search = (search, name, "poses" in payload, resume_index)
             self.operation += 1
             self.operation_started_ns = self.get_clock().now().nanoseconds
-            self.busy, self.navigation, self.message = True, "规划中", "正在自动选择可行驶朝向"
+            self.busy, self.navigation, self.message = True, "规划中", "正在搜索可通行路线和轨迹切线"
             self.path = self.tracking_path = self.planned_targets = []
             self.tracking_goal = None
             return {"ok": True, "operation": self.operation}
@@ -990,11 +1033,12 @@ class NavigationBridge(Node):
         elif name == "goal":
             client, goal = self.goal_client, NavigateToPose.Goal()
             goal.pose = poses[0]
-            goal.behavior_tree = getattr(self, "behavior_trees", {}).get(name, "")
         else:
             client, goal = self.route_client, NavigateThroughPoses.Goal()
             goal.poses = poses
-            goal.behavior_tree = getattr(self, "behavior_trees", {}).get(name, "")
+        if name != "plan":
+            trees = getattr(self, "position_trees" if automatic else "behavior_trees", {})
+            goal.behavior_tree = trees.get(name, "")
         if not client.server_is_ready():
             raise ValueError("Nav2 action 尚未就绪，请检查生命周期及代价地图")
         if not automatic:
@@ -1068,14 +1112,17 @@ class NavigationBridge(Node):
                     5: "已取消",
                     6: "任务失败",
                 }.get(response.status, "任务结束")
+                self.message = f"Nav2 状态码 {response.status}"
                 if kind == "plan":
-                    self.path = [
+                    path = [
                         [p.pose.position.x, p.pose.position.y]
                         for p in response.result.path.poses
                     ]
-                    if response.status == 4 and not self.path:
+                    if response.status == 4 and self.active_model.path_is_free(self.active_grid, path):
+                        self.path = path
+                    elif response.status == 4:
                         self.navigation = "规划失败"
-                self.message = f"Nav2 状态码 {response.status}"
+                        self.message = PATH_BOUNDARY_ERROR if path else "Nav2 未返回有效路径"
                 if kind != "plan" and response.status == 5:
                     self.message = "任务已停止，进度已保留；点击开始导航可选择继续"
                 if kind == "plan" and response.status == 6:

@@ -1,0 +1,18 @@
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="PlanThenFollow">
+      <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
+      <RecoveryNode number_of_retries="1" name="PlanBeforeMotion">
+        <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+        <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+      </RecoveryNode>
+      <PipelineSequence name="TrackPathAndUpdateWaypointProgress">
+        <!-- Record the remaining goals for feedback without changing the path. -->
+        <RateController hz="1.0">
+          <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
+        </RateController>
+        <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
+      </PipelineSequence>
+    </Sequence>
+  </BehaviorTree>
+</root>

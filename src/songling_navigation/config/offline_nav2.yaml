@@ -74,6 +74,7 @@ controller_server:
     progress_checker_plugin: progress_checker
     goal_checker_plugins:
     - general_goal_checker
+    - position_goal_checker
     controller_plugins:
     - FollowPath
     progress_checker:
@@ -85,6 +86,10 @@ controller_server:
       plugin: nav2_controller::SimpleGoalChecker
       xy_goal_tolerance: 0.35
       yaw_goal_tolerance: 0.5
+    position_goal_checker:
+      stateful: true
+      plugin: nav2_controller::PositionGoalChecker
+      xy_goal_tolerance: 0.35
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
       desired_linear_vel: 0.5
@@ -170,8 +175,9 @@ global_costmap:
       transform_tolerance: 0.3
       resolution: 0.1
       track_unknown_space: true
-      footprint: '[[-0.41, -0.32], [-0.41, 0.32], [0.41, 0.32], [0.41, -0.32]]'
-      footprint_padding: 0.02
+      # The planner checks the vehicle center against the keepout mask. The
+      # radius also protects the center around obstacles added by the sensor.
+      robot_radius: 0.65
       rolling_window: false
       plugins:
       - static_layer
@@ -182,7 +188,7 @@ global_costmap:
       always_send_full_costmap: true
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
-        map_topic: /map
+        map_topic: /offline_nav/footprint_map
         map_subscribe_transient_local: true
         subscribe_to_updates: false
         footprint_clearing_enabled: false
@@ -207,8 +213,8 @@ global_costmap:
           expected_update_rate: 0.5
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.8
-        cost_scaling_factor: 3.0
+        inflation_radius: 2.5
+        cost_scaling_factor: 1.0
       keepout_filter:
         plugin: nav2_costmap_2d::KeepoutFilter
         enabled: true
@@ -220,6 +226,7 @@ planner_server:
     use_sim_time: false
     planner_plugins:
     - GridBased
+    - RouteGuide
     GridBased:
       plugin: nav2_smac_planner/SmacPlannerHybrid
       tolerance: 0.25
@@ -228,11 +235,18 @@ planner_server:
       motion_model_for_search: DUBIN
       angle_quantization_bins: 72
       minimum_turning_radius: 1.9
-      max_planning_time: 3.0
-      max_iterations: 1000000
+      max_planning_time: 8.0
+      max_iterations: 3000000
       max_on_approach_iterations: 1000
-      cost_penalty: 3.0
+      cost_penalty: 5.0
       smooth_path: true
+    RouteGuide:
+      plugin: nav2_smac_planner/SmacPlanner2D
+      tolerance: 0.25
+      allow_unknown: false
+      cost_travel_multiplier: 4.0
+      max_planning_time: 2.0
+      use_final_approach_orientation: true
 behavior_server:
   ros__parameters:
     costmap_topic: local_costmap/costmap_raw

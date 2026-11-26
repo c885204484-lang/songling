@@ -103,6 +103,40 @@ def test_footprint_map_keeps_original_obstacles_without_duplicate_body_clearance
     assert p["clearance_m"] == .65
 
 
+def test_detail_map_uses_the_original_labels_and_keeps_the_safety_margin():
+    pixels = np.full((32, 32), 254, np.uint8)
+    pixels[15, 15] = 0
+    source = MapModel(Image.fromarray(pixels), dict(resolution=.51, origin=[0., 0., 0.]))
+    project = source.empty_project()
+    project['drivable'] = [[[3., 3.], [12., 3.], [12., 12.], [3., 12.]]]
+    project['forbidden'] = [[[9., 4.], [13., 4.], [13., 12.], [9., 12.]]]
+    nav, grid = source.navigation_map(project)
+    physical, body_grid = source.footprint_map(project)
+    assert nav.resolution == physical.resolution == .25
+    assert nav.origin == physical.origin == [1., 1., 0.]
+    assert not physical.is_free(body_grid, 9.5, 8.)
+    assert not physical.is_free(body_grid, 7.62, 8.3)  # overlaps an occupied source cell
+    assert physical.is_free(body_grid, 3.35, 6.)
+    assert not nav.is_free(grid, 3.35, 6.) and nav.is_free(grid, 4.25, 6.)
+    preview = source.navigation_preview(project)
+    assert preview.shape == source.base.shape
+    for x, y in ((2, 15), (8, 12), (21, 15), (31, 31)):
+        assert (preview[y, x] == 0) == nav.is_free(grid, *source.grid_to_world(x + .5, y + .5))
+
+
+def test_path_cannot_clip_a_blocked_cell_between_free_poses():
+    model = MapModel.demo()
+    grid = np.zeros_like(model.base)
+    grid[10, 11] = 100
+    start = model.grid_to_world(10.4, 10.4)
+    goal = model.grid_to_world(11.6, 11.59)
+    assert model.is_free(grid, *start) and model.is_free(grid, *goal)
+    assert not model.path_is_free(grid, [start, goal])
+    assert not model.path_is_free(grid, [goal, start])
+    via = model.grid_to_world(10.5, 11.5)
+    assert model.path_is_free(grid, [start, via, goal])
+
+
 @pytest.mark.parametrize("yaw", [0, 0.7, -math.pi / 2])
 def test_rotated_map_coordinates_and_masks(yaw):
     m = small_model((12.0, -8.0, yaw))

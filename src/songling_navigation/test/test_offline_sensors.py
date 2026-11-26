@@ -18,6 +18,8 @@ def test_map_only_costmaps_keep_static_boundaries_and_collision_checks():
         if name == "global_costmap":
             assert params["filters"] == ["keepout_filter"]
             assert params["keepout_filter"]["enabled"]
+            assert params["static_layer"]["map_topic"] == "/offline_nav/footprint_map"
+            assert "footprint" not in params and params["robot_radius"] == .65
         else:
             assert params.get("filters", []) == []
             assert params["static_layer"]["map_topic"] == "/offline_nav/footprint_map"

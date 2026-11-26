@@ -744,6 +744,7 @@ input[type="file"] {
 .speed-choices small { color: var(--muted); }
 .speed-choices [aria-pressed="true"] { background: #213a39; border-color: var(--accent); }
 #navigation-dialog select { width: 100%; padding: 8px; }
+#navigation-feedback.error { color: #ffbc71; overflow-wrap: anywhere; }
 #settings-dialog .settings-actions { display: grid; grid-template-columns: 1fr 1fr; margin: 0; }
 #settings-dialog #save { grid-column: 1 / -1; }
 @media (max-height: 550px) {

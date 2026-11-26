@@ -5,6 +5,7 @@ import tempfile
 import yaml
 
 from songling_navigation.offline_nav.sensors import nav2_sensor_config
+from songling_navigation.offline_nav.behavior import navigation_tree_files
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -44,15 +45,12 @@ def nodes(context):
         args += ["--sample-map"]
     if motion:
         args += ["--enable-motion"]
+    trees = navigation_tree_files(os.path.join(share, "behavior_trees"), use_lidar)
     overrides = {
         "use_sim_time": False,
         "odom_topic": get("odom_topic"),
-        "default_nav_to_pose_bt_xml": os.path.join(
-            share, "behavior_trees", "offline_to_pose.xml"
-        ),
-        "default_nav_through_poses_bt_xml": os.path.join(
-            share, "behavior_trees", "offline_through_poses.xml"
-        ),
+        "default_nav_to_pose_bt_xml": str(trees["goal"]),
+        "default_nav_through_poses_bt_xml": str(trees["route"]),
     }
     specs = [
         ("nav2_controller", "controller_server"),

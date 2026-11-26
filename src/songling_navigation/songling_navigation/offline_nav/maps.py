@@ -219,7 +219,9 @@ class MapModel:
         return p
 
     def rasterize(self, project):
-        p = self.validate(project)
+        return self._rasterize(self.validate(project))
+
+    def _rasterize(self, p):
         allowed = np.zeros(self.base.shape, np.uint8)
         for kind, value in (("drivable", 1), ("forbidden", 0)):
             for polygon in p[kind]:
@@ -227,9 +229,7 @@ class MapModel:
                 cv2.fillPoly(
                     allowed,
                     [
-                        np.floor(
-                            np.clip(points, [0, 0], [self.width, self.height]) + 1e-8
-                        ).astype(np.int32)
+                        np.floor(points + 1e-8).astype(np.int32)
                     ],
                     value,
                 )
@@ -254,11 +254,69 @@ class MapModel:
             and grid[int(gy), int(gx)] == 0
         )
 
+    @staticmethod
+    def safe_components(grid):
+        # Diagonal contact between cells has no width for a route to pass through.
+        return cv2.connectedComponents((grid == 0).astype(np.uint8), connectivity=4)[1]
+
+    def path_is_free(self, grid, path):
+        """Check every cell traversed by each segment of a map-frame path."""
+        if not path or not all(math.isfinite(v) for point in path for v in point):
+            return False
+        points = [self.world_to_grid(x, y) for x, y in path]
+        if not all(0 <= x < self.width and 0 <= y < self.height and grid[int(y), int(x)] == 0
+                   for x, y in points):
+            return False
+        for (x0, y0), (x1, y1) in zip(points, points[1:]):
+            crossings = [0.0, 1.0]
+            for start, end in ((x0, x1), (y0, y1)):
+                lower, upper = sorted((start, end))
+                crossings.extend(
+                    (edge - start) / (end - start)
+                    for edge in range(math.floor(lower) + 1, math.ceil(upper))
+                )
+            crossings.sort()
+            for first, second in zip(crossings, crossings[1:]):
+                # Between adjacent crossings the segment stays in a single cell.
+                fraction = (first + second) / 2
+                gx = int(x0 + fraction * (x1 - x0))
+                gy = int(y0 + fraction * (y1 - y0))
+                if grid[gy, gx] != 0:
+                    return False
+        return True
+
+    def _navigation_detail(self, project):
+        resolution = 0.25
+        if self.resolution <= resolution or not project["drivable"]:
+            return self
+        vertices = np.vstack(project["drivable"])
+        lower = np.maximum(vertices.min(axis=0) - 2.0, self.origin[:2])
+        upper = np.minimum(vertices.max(axis=0) + 2.0, self.grid_to_world(self.width, self.height))
+        width, height = map(int, np.ceil((upper - lower) / resolution))
+        if width * height > MAX_NAV_CELLS:
+            return self
+
+        x = (lower[0] - self.origin[0] + np.arange(width + 1) * resolution) / self.resolution
+        y = (lower[1] - self.origin[1] + np.arange(height + 1) * resolution) / self.resolution
+        left, right = np.floor(x[:-1] + 1e-9).astype(int), np.ceil(x[1:] - 1e-9).astype(int) - 1
+        bottom, top = np.floor(y[:-1] + 1e-9).astype(int), np.ceil(y[1:] - 1e-9).astype(int) - 1
+        # A refined cell is usable only when all of its source cells are free.
+        free_source = np.pad(self.base == 0, ((0, 1), (0, 1)), constant_values=False)
+        free = (free_source[bottom[:, None], left] & free_source[bottom[:, None], right]
+                & free_source[top[:, None], left] & free_source[top[:, None], right])
+        return MapModel(
+            Image.fromarray(np.flipud(np.where(free, 254, 0)).astype(np.uint8)),
+            dict(resolution=resolution, origin=[*lower.tolist(), 0.0]),
+            max_cells=MAX_NAV_CELLS,
+        )
+
     def navigation_map(self, project):
         """Nav2 costmaps are axis aligned; conservatively resample rotated inputs."""
-        grid = self.rasterize(project)
+        p = self.validate(project)
         if abs(math.remainder(self.origin[2], 2 * math.pi)) < 1e-9:
-            return self, grid
+            model = self._navigation_detail(p)
+            return model, model._rasterize(p)
+        grid = self._rasterize(p)
         corners = np.asarray(
             [
                 self.grid_to_world(x, y)
@@ -318,8 +376,8 @@ class MapModel:
         c, s, res = math.cos(self.origin[2]), math.sin(self.origin[2]), self.resolution
         wx = self.origin[0] + res * (c * xs - s * ys)
         wy = self.origin[1] + res * (s * xs + c * ys)
-        gx = np.floor((wx - nav.origin[0]) / res).astype(int)
-        gy = np.floor((wy - nav.origin[1]) / res).astype(int)
+        gx = np.floor((wx - nav.origin[0]) / nav.resolution).astype(int)
+        gy = np.floor((wy - nav.origin[1]) / nav.resolution).astype(int)
         valid = (gx >= 0) & (gy >= 0) & (gx < nav.width) & (gy < nav.height)
         output = np.full(self.base.shape, 100, np.int8)
         output[valid] = grid[gy[valid], gx[valid]]

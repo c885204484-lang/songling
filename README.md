@@ -113,7 +113,7 @@ ros2 launch songling_navigation mapping_l2.launch.yaml
 ## 运行前检查
 
 1. 确认底盘 CAN/串口、RTK 串口和雷达 USB 设备均已连接，且当前用户具备访问权限。
-2. 检查启动文件中的设备路径：`gps_navigation.launch.py` 默认使用 `/dev/ttyACM0`，YOLO 版本使用 `/dev/wheeltec_gnss`。
+2. RTK 默认使用设备别名 `/dev/wheeltec_gnss`。使用其他串口时，可向 `gps_navigation.launch.py` 传入 `gps_port:=/dev/设备名`。
 3. 检查 RTK、雷达、相机与车体之间的外参，以及 `songling.urdf` 的坐标系命名。
 4. 仅运行一种全局定位来源：RTK+全局 EKF 或 AMCL 地图定位。二者同时发布 `map -> odom` 会造成 TF 冲突。
 5. `map_navigation.launch.py` 当前将 Nav2、AMCL 相关启动段注释掉了，所以它只会启动传感器、坐标发布、点云切片和局部 EKF。若要恢复完整地图导航，先确认地图、参数、TF 树无冲突后再启用该段。

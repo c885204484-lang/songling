@@ -65,6 +65,7 @@ def state():
         chassis_seen=0.0,
         stop_reason='',
         tracking_path=[[-10., 0.], [39., 0.]],
+        planned_targets=[],
         tracking_goal=[39., 0.],
         odometry=dict(v=0., vy=0., w=0., valid=True),
         odometry_seen=now,
@@ -244,6 +245,7 @@ def test_replan_from_deviated_pose_cannot_erase_initial_tracking_error():
     data = ticking_state()
     data.operation_started_ns = 1_000_000_000
     data.tracking_goal = [39., 0.]
+    data.path = data.tracking_path
     path = Path()
     path.header.frame_id = 'map'
     path.header.stamp.sec = 2
@@ -253,7 +255,7 @@ def test_replan_from_deviated_pose_cannot_erase_initial_tracking_error():
         path.poses.append(p)
     data.pose['y'] = -.8
     NavigationBridge.on_path(data, path)
-    assert data.path[0] == [0., -.8]
+    assert data.path[0] == [-10., 0.]
     assert data.tracking_path[0] == [-10., 0.]
     NavigationBridge.tick(data)
     assert data.stop_reason.startswith('车辆偏离本次规划路径')
@@ -287,6 +289,7 @@ def replan_message(points):
 def test_safe_replan_updates_reference_before_following_new_curve():
     data = ticking_state()
     data.operation_started_ns = 1_000_000_000
+    data.active_grid.fill(0)
     # The vehicle is still on the old path when Nav2 routes around an obstacle.
     path = replan_message([[0., 0.], [0., -2.], [39., 0.]])
     NavigationBridge.on_path(data, path)
@@ -297,6 +300,44 @@ def test_safe_replan_updates_reference_before_following_new_curve():
     data.pose['y'], data.pose['yaw'] = -.2, -math.pi / 2
     data.cmd_seen = time.monotonic()
     assert NavigationBridge.velocity_block_reason(data) == ''
+
+
+def test_map_only_mode_keeps_first_accepted_path_and_controller_command():
+    data = ticking_state()
+    data.use_lidar = False
+    data.operation_started_ns = 1_000_000_000
+    data.active_grid.fill(0)
+    data.path = data.tracking_path = []
+    initial = [[0., 0.], [39., 0.]]
+    NavigationBridge.on_path(data, replan_message(initial))
+    assert data.path == data.tracking_path == initial
+    assert data.cmd_seen == 0.
+
+    data.cmd_seen = time.monotonic()
+    last_command = data.cmd_seen
+    update = replan_message([[0., 0.], [0., -2.], [39., 0.]])
+    update.header.stamp.sec = 3
+    NavigationBridge.on_path(data, update)
+    assert data.path == data.tracking_path == initial
+    assert data.cmd_seen == last_command
+
+
+def test_unsafe_segment_between_valid_path_poses_cancels_navigation():
+    data = ticking_state()
+    data.use_lidar = False
+    data.operation_started_ns = 1_000_000_000
+    data.path = data.tracking_path = []
+    data.tracking_goal = [30., 0.]
+    cancellations = []
+    data.action_handle = SimpleNamespace(cancel_goal_async=lambda: cancellations.append(True))
+    # The middle of the straight segment intersects the demo map obstacle.
+    points = [[0., 0.], data.tracking_goal]
+    assert all(data.active_model.is_free(data.active_grid, *point) for point in points)
+    NavigationBridge.on_path(data, replan_message(points))
+    assert cancellations == [True]
+    assert not data.tracking_path and not data.path
+    assert data.stop_reason.startswith('规划路径穿过禁行区或边界安全带')
+    assert data.output[-1].linear.x == 0.
 
 
 @pytest.mark.parametrize('change', ['wrong_goal', 'remote_start', 'stale_pose', 'cancelling', 'latched_fault'])

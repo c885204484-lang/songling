@@ -1,0 +1,11 @@
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="PlanThenFollow">
+      <RecoveryNode number_of_retries="1" name="PlanBeforeMotion">
+        <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+        <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+      </RecoveryNode>
+      <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

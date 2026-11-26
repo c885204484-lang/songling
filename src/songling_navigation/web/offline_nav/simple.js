@@ -51,14 +51,14 @@ async function api(path, data) {
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   return body;
 }
-function action(fn) {
+function action(fn, reportError = (error) => notice(error.message, true)) {
   return async () => {
     if (networkBusy) return;
     networkBusy = true;
     try {
       await fn();
     } catch (e) {
-      notice(e.message, true);
+      reportError(e);
     } finally {
       networkBusy = false;
     }
@@ -133,7 +133,7 @@ function polygon(points, color, closed = true) {
   if (closed) ctx.fill();
   ctx.stroke();
 }
-function marker(x, y, color, label, yaw = 0) {
+function marker(x, y, color, label, yaw) {
   const [px, py] = worldToPixel([x, y]);
   ctx.save();
   ctx.translate(px, py);
@@ -145,21 +145,23 @@ function marker(x, y, color, label, yaw = 0) {
   ctx.arc(0, 0, 9, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
-  ctx.rotate(project.map.origin[2] - yaw);
   ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(9, 0);
-  ctx.lineTo(27, 0);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(29, 0);
-  ctx.lineTo(20, -5);
-  ctx.lineTo(20, 5);
-  ctx.fill();
-  ctx.rotate(yaw - project.map.origin[2]);
+  if (Number.isFinite(yaw)) {
+    ctx.rotate(project.map.origin[2] - yaw);
+    ctx.beginPath();
+    ctx.moveTo(9, 0);
+    ctx.lineTo(27, 0);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(29, 0);
+    ctx.lineTo(20, -5);
+    ctx.lineTo(20, 5);
+    ctx.fill();
+    ctx.rotate(yaw - project.map.origin[2]);
+    label += ` · ${(yaw * 180 / Math.PI).toFixed(0)}°`;
+  }
   ctx.font = "11px sans-serif";
-  ctx.fillStyle = color;
-  ctx.fillText(`${label} · ${(yaw * 180 / Math.PI).toFixed(0)}°`, 13, -12);
+  ctx.fillText(label, 13, -12);
   ctx.restore();
 }
 function draw() {
@@ -456,7 +458,7 @@ canvas.addEventListener("pointerup", (e) => {
     goal = { x, y, yaw: 0 };
     goalSet = true;
     syncGoal();
-    notice("终点已设置，规划路径时会自动选择行驶朝向");
+    notice("终点已设置，到达朝向由路径切线决定");
     draw();
   } else if (tool === "obstacle") {
     const next = [...obstacles, [x, y]];
@@ -606,6 +608,23 @@ for (const [id, direct] of [["plan", false], ["plan-route", true]])
       : `正在规划经过 ${project.waypoints.length} 个途径点到达终点的路径`);
   });
 let navigationChoice = null;
+function navigationFeedback(message, error = false) {
+  const feedback = $("navigation-feedback");
+  feedback.textContent = message;
+  feedback.classList.toggle("error", error);
+  feedback.hidden = !message;
+  if (message && !$("navigation-dialog").open) notice(message, error);
+}
+
+function navigationAction(submit) {
+  return action(async () => {
+    navigationFeedback("正在提交导航请求…");
+    const message = await submit();
+    $("navigation-dialog").close();
+    notice(message);
+  }, (error) => navigationFeedback(error.message, true));
+}
+
 function validateNavigationInput() {
   requireSavedMap();
   if (!goalSet) throw new Error("请先选择终点");
@@ -643,10 +662,12 @@ async function openNavigationChoices() {
   $("mission-restart").textContent = project.waypoints.length
     ? "从途径点 1 重新执行全部任务" : "开始新的终点导航";
   $("navigation-dialog").showModal();
+  const blocker = [runtime.chassis, runtime.odometry].find(sensor => sensor?.ready === false);
+  navigationFeedback(blocker?.message || "", Boolean(blocker));
 }
 for (const id of ["navigate", "route"]) $(id).onclick = action(openNavigationChoices);
 $("navigation-close").onclick = () => $("navigation-dialog").close();
-$("mission-resume").onclick = action(async () => {
+$("mission-resume").onclick = navigationAction(async () => {
   validateNavigationInput();
   const m = navigationChoice;
   if (!m?.available || !m.compatible) throw new Error("没有可继续的任务");
@@ -654,20 +675,17 @@ $("mission-resume").onclick = action(async () => {
   const selected = Number($("resume-target").value);
   if (!m.progress_confirmed || selected !== m.next_index) payload.from_index = selected;
   await api("/api/resume", payload);
-  $("navigation-dialog").close();
-  notice("已从当前位置继续剩余目标，直至终点");
+  return "已从当前位置继续剩余目标，直至终点";
 });
-$("mission-restart").onclick = action(async () => {
+$("mission-restart").onclick = navigationAction(async () => {
   validateNavigationInput();
   await api("/api/" + (project.waypoints.length ? "route" : "goal"), navigationPayload());
-  $("navigation-dialog").close();
-  notice("正在准备导航，将按顺序经过全部途径点和终点");
+  return "正在准备导航，将按顺序经过全部途径点和终点";
 });
-$("mission-direct").onclick = action(async () => {
+$("mission-direct").onclick = navigationAction(async () => {
   validateNavigationInput();
   await api("/api/goal", navigationPayload(true));
-  $("navigation-dialog").close();
-  notice("已请求从当前位置直接导航到终点");
+  return "已请求从当前位置直接导航到终点";
 });
 async function stopNavigation() {
   try {
